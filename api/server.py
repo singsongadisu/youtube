@@ -1,6 +1,7 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 import asyncio
 import json
 import os
@@ -11,10 +12,20 @@ from pathlib import Path
 ROOT_DIR = Path(__file__).parent.parent
 sys.path.append(str(ROOT_DIR))
 
+# Directory setup (Absolute paths)
+VIDEO_DIR = (ROOT_DIR / "assets" / "videos").resolve()
+DOWNLOAD_DIR = (ROOT_DIR / "assets" / "downloads").resolve()
+AUDIO_DIR = (ROOT_DIR / "assets" / "audio").resolve()
+
+VIDEO_DIR.mkdir(parents=True, exist_ok=True)
+DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
+AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+
 from main import YouTubeAmharicCreator
 from processor.tts_engine import TTSEngine
 from processor.db import DatabaseManager
 from processor.creative_engine import CreativeEngine
+from processor.downloader import VideoDownloader
 
 app = FastAPI()
 
@@ -22,6 +33,7 @@ app = FastAPI()
 creator = YouTubeAmharicCreator()
 db_manager = DatabaseManager()
 creative_engine = CreativeEngine()
+video_downloader = VideoDownloader(download_path=DOWNLOAD_DIR)
 
 # Enable CORS
 app.add_middleware(
@@ -55,6 +67,8 @@ async def websocket_endpoint(websocket: WebSocket):
         target_duration = req.get("duration", 5) 
         target_lang = req.get("language", "am")
         target_tone = req.get("tone", "neutral")
+        mission = req.get("mission", "translate")
+        genre = req.get("genre", "sermon")
         
         if not url:
             await websocket.send_json({"error": "No URL provided"})
@@ -76,6 +90,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 target_duration=target_duration, 
                 target_lang=target_lang,
                 tone=target_tone,
+                mission=mission,
                 status_callback=send_status
             )
             
@@ -230,18 +245,56 @@ async def generate_forge_video(req: dict):
         print(f"Rendering error: {e}")
         return {"error": str(e)}
 
-# Serve static files for generated videos, downloads, and audio
-VIDEO_DIR = (ROOT_DIR / "assets" / "videos").resolve()
-DOWNLOAD_DIR = (ROOT_DIR / "assets" / "downloads").resolve()
-AUDIO_DIR = (ROOT_DIR / "assets" / "audio").resolve()
+@app.get("/video-info")
+async def get_video_info(url: str):
+    if not url:
+        return {"error": "No URL provided"}
+    # Use to_thread to prevent blocking the event loop
+    info = await asyncio.to_thread(video_downloader.get_video_info, url)
+    return info
 
-VIDEO_DIR.mkdir(parents=True, exist_ok=True)
-DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
-AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+@app.post("/download-social")
+async def download_social(req: dict):
+    url = req.get("url")
+    format_id = req.get("format_id")
+    if not url:
+        return {"error": "No URL provided"}
+    
+    try:
+        # Use to_thread to prevent blocking the event loop for long downloads
+        file_path = await asyncio.to_thread(video_downloader.download_video, url, format_id)
+        filename = os.path.basename(file_path)
+        return {
+            "status": "completed",
+            "filename": filename,
+            "download_url": f"http://localhost:8000/static/downloads/{filename}"
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+# Serve static files for generated videos, downloads, and audio
 
 app.mount("/static/videos", StaticFiles(directory=str(VIDEO_DIR)), name="static_videos")
 app.mount("/static/downloads", StaticFiles(directory=str(DOWNLOAD_DIR)), name="static_downloads")
 app.mount("/static/audio", StaticFiles(directory=str(AUDIO_DIR)), name="static_audio")
+
+@app.get("/download-file")
+async def download_file(type: str, filename: str):
+    """Securely returns a file as an attachment to force browser download."""
+    if type == "video":
+        path = VIDEO_DIR / filename
+    elif type == "download":
+        path = DOWNLOAD_DIR / filename
+    elif type == "audio":
+        path = AUDIO_DIR / filename
+    else:
+        return {"error": "Invalid type"}
+    
+    if not path.exists():
+        return {"error": "File not found"}
+    
+    # Setting filename here forces 'Content-Disposition: attachment'
+    return FileResponse(path, filename=filename)
 
 if __name__ == "__main__":
     import uvicorn

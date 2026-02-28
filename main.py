@@ -20,7 +20,7 @@ class YouTubeAmharicCreator:
         (self.base_dir / "assets/images").mkdir(parents=True, exist_ok=True)
         (self.base_dir / "outputs").mkdir(parents=True, exist_ok=True)
 
-    async def process_video(self, url: str, target_duration: int = 5, target_lang: str = "am", tone: str = "neutral", status_callback=None):
+    async def process_video(self, url: str, target_duration: int = 5, target_lang: str = "am", tone: str = "neutral", mission: str = "translate", genre: str = "sermon", status_callback=None):
         from processor.studio_engine import StudioEngine
         from processor.video_composer import VideoComposer
         studio = StudioEngine()
@@ -47,7 +47,28 @@ class YouTubeAmharicCreator:
         await update_status("✍️ Transcribing full audio...", 40)
         # We need the segments for the editing guide
         whisper_model = self.transcriber.model
-        result = await asyncio.to_thread(whisper_model.transcribe, audio_path)
+        
+        # V30: Transcription Heartbeat (Prevents UI appearing 'stuck' on CPU)
+        stop_heartbeat = asyncio.Event()
+        
+        async def heartbeat():
+            heartbeat_count = 0
+            while not stop_heartbeat.is_set():
+                await asyncio.sleep(20) # Ping every 20 seconds
+                if stop_heartbeat.is_set(): break
+                heartbeat_count += 1
+                msg = f"✍️ Still transcribing... (Step {heartbeat_count})"
+                if heartbeat_count > 3:
+                    msg += " [This is a long video, still working!]"
+                await update_status(msg, 40)
+        
+        heartbeat_task = asyncio.create_task(heartbeat())
+        try:
+            result = await asyncio.to_thread(whisper_model.transcribe, audio_path)
+        finally:
+            stop_heartbeat.set()
+            await heartbeat_task
+
         source_text = result["text"]
         segments = result["segments"]
         await update_status("✅ Transcription complete", 60)
@@ -63,18 +84,25 @@ class YouTubeAmharicCreator:
         # V17: Massive Parallelism Sprint
         print("⚡ Starting Parallel Studio Analysis...")
         
-        if target_lang == "en":
-            print("🇬🇧 Using English Recreator path...")
+        if mission == "recreate" or mission == "shorts":
+            print(f"🎬 Mission: {mission.upper()} - Using Synthesis/Rendering path (Genre: {genre})...")
             # V40: Pass full segments for precision timestamp tracking
-            studio_script_data = en_recreator.condense_from_segments(segments, target_duration_mins=target_duration_mins)
-            studio_script_task = asyncio.to_thread(lambda: studio_script_data["text"])
-            metadata_task = en_recreator.generate_metadata(Path(audio_path).stem, studio_script_data["text"])
+            studio_script_data = en_recreator.condense_from_segments(segments, target_duration_mins=target_duration_mins, genre=genre)
+            
+            async def get_script():
+                text = studio_script_data["text"]
+                if target_lang != "en":
+                    return await studio.translate_to_amharic(text, tone=tone) # Should ideally support other languages too
+                return text
+
+            studio_script_task = get_script()
+            metadata_task = studio.generate_metadata_recommendations(Path(audio_path).stem, segments, target_lang, tone, genre=genre)
             editing_guide_task = en_recreator.extract_editing_roadmap(target_duration_mins)
         else:
-            print("🇪🇹 Using Amharic Studio path...")
+            print(f"🌍 Mission: {mission.upper()} - Using Translation/Localization path...")
             studio_script_task = studio.translate_to_amharic(source_text, tone=tone)
-            metadata_task = studio.generate_metadata_recommendations(Path(audio_path).stem, segments, target_lang, tone)
-            editing_guide_task = studio.extract_editing_guide(segments, target_duration_mins, target_lang, tone)
+            metadata_task = studio.generate_metadata_recommendations(Path(audio_path).stem, segments, target_lang, tone, genre=genre)
+            editing_guide_task = studio.extract_editing_guide(segments, target_duration_mins, target_lang, tone, genre=genre)
 
         # Define all tasks (Directly await async ones, wrap sync ones in to_thread)
         tasks = {

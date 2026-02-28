@@ -14,6 +14,7 @@ function App() {
   const [duration, setDuration] = useState(5);
   const [language, setLanguage] = useState('am');
   const [tone, setTone] = useState('neutral');
+  const [genre, setGenre] = useState('sermon'); // 'sermon', 'podcast', 'interview', 'panel'
   const [status, setStatus] = useState('idle');
   const [message, setMessage] = useState('');
   const [progress, setProgress] = useState(0);
@@ -22,9 +23,19 @@ function App() {
   const [tpFontSize, setTpFontSize] = useState(24);
   const [tpSpeed, setTpSpeed] = useState(2);
   const [projects, setProjects] = useState([]);
-  const [activeTab, setActiveTab] = useState('studio-am');
+  const [activeTab, setActiveTab] = useState('universal-studio');
+  const [mission, setMission] = useState(null); // 'recreate', 'translate', 'shorts', 'voice'
+  const [showMissionControl, setShowMissionControl] = useState(true);
   const [ttsAudio, setTtsAudio] = useState(null);
   const [isGeneratingTTS, setIsGeneratingTTS] = useState(false);
+
+  // Social Downloader State
+  const [downloaderUrl, setDownloaderUrl] = useState('');
+  const [videoInfo, setVideoInfo] = useState(null);
+  const [isFetchingInfo, setIsFetchingInfo] = useState(false);
+  const [downloadStatus, setDownloadStatus] = useState('idle');
+  const [selectedFormat, setSelectedFormat] = useState(null);
+  const [socialDownloadUrl, setSocialDownloadUrl] = useState(null);
 
   // Voice Studio Specific State
   const [vsScript, setVsScript] = useState('');
@@ -90,7 +101,8 @@ function App() {
         setVsLang(data.target_lang);
         setStatus('completed');
         setMessage('Loaded from MongoDB');
-        setActiveTab('studio');
+        setActiveTab('universal-studio');
+        setShowMissionControl(false);
       }
     } catch (err) {
       console.error("Failed to load project:", err);
@@ -107,7 +119,7 @@ function App() {
 
     ws.current = new WebSocket('ws://localhost:8000/ws/process');
     ws.current.onopen = () => {
-      ws.current.send(JSON.stringify({ url, duration: parseInt(duration), language }));
+      ws.current.send(JSON.stringify({ url, duration: parseInt(duration), language, mission, genre }));
     };
 
     ws.current.onmessage = (event) => {
@@ -144,26 +156,15 @@ function App() {
 
   const downloadSourceVideo = () => {
     if (!studioData?.video_filename) return;
-    const downloadUrl = `http://localhost:8000/static/downloads/${encodeURIComponent(studioData.video_filename)}`;
-    const a = document.createElement('a');
-    a.href = downloadUrl;
-    a.download = studioData.video_filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
+    const downloadUrl = `http://localhost:8000/download-file?type=download&filename=${encodeURIComponent(studioData.video_filename)}`;
+    window.location.href = downloadUrl;
   };
 
   const downloadRenderedVideo = () => {
     if (!studioData?.rendered_video_path) return;
-    // The path is absolute on the server, we need to extract the filename
     const filename = studioData.rendered_video_path.split(/[\\/]/).pop();
-    const downloadUrl = `http://localhost:8000/static/videos/${encodeURIComponent(filename)}`;
-    const a = document.createElement('a');
-    a.href = downloadUrl;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
+    const downloadUrl = `http://localhost:8000/download-file?type=video&filename=${encodeURIComponent(filename)}`;
+    window.location.href = downloadUrl;
   };
 
   const generateTTS = async (text, lang) => {
@@ -289,40 +290,111 @@ function App() {
     }
   };
 
+  const fetchVideoInfo = async () => {
+    if (!downloaderUrl) return;
+    setIsFetchingInfo(true);
+    setVideoInfo(null);
+    setSelectedFormat(null);
+    setDownloadStatus('fetching');
+    try {
+      const resp = await fetch(`http://localhost:8000/video-info?url=${encodeURIComponent(downloaderUrl)}`);
+      const data = await resp.json();
+      if (data.error) {
+        setDownloadStatus('error');
+        setMessage(data.error);
+      } else {
+        setVideoInfo(data);
+        setDownloadStatus('idle');
+        // Set a default format (e.g., best mp4)
+        const bestMp4 = data.formats.find(f => f.extension === 'mp4' && f.vcodec !== 'none' && f.acodec !== 'none');
+        if (bestMp4) setSelectedFormat(bestMp4.format_id);
+      }
+    } catch (err) {
+      console.error("Fetch info failed:", err);
+      setDownloadStatus('error');
+    } finally {
+      setIsFetchingInfo(false);
+    }
+  };
+
+  const handleDownloadSocial = async () => {
+    if (!downloaderUrl || !selectedFormat) return;
+    setDownloadStatus('downloading');
+    setProgress(0);
+    try {
+      const resp = await fetch('http://localhost:8000/download-social', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: downloaderUrl, format_id: selectedFormat })
+      });
+      const data = await resp.json();
+      if (data.status === 'completed') {
+        const forcedDownloadUrl = `http://localhost:8000/download-file?type=download&filename=${encodeURIComponent(data.filename)}`;
+        setDownloadStatus('completed');
+        setSocialDownloadUrl(forcedDownloadUrl);
+        setProgress(100);
+
+        // Automatically trigger browser download via the forced download endpoint
+        window.location.href = forcedDownloadUrl;
+      } else {
+        setDownloadStatus('error');
+        setMessage(data.error || 'Download failed');
+      }
+    } catch (err) {
+      console.error("Download failed:", err);
+      setDownloadStatus('error');
+    }
+  };
+
   return (
     <div className="studio-container">
       {/* Sidebar */}
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-dot" />
-          <span>Amharic Studio</span>
+          <span className="brand-name">Amharic Studio 2.0</span>
         </div>
 
-        <nav className="nav-section">
-          <div className={`nav-item ${activeTab === 'studio-am' ? 'active' : ''}`} onClick={() => { setActiveTab('studio-am'); setLanguage('am'); }}>
-            <Layout size={18} />
-            <span>Amharic Studio</span>
-          </div>
-          <div className={`nav-item ${activeTab === 'studio-en' ? 'active' : ''}`} onClick={() => { setActiveTab('studio-en'); setLanguage('en'); }}>
-            <Globe size={18} />
-            <span>English Studio</span>
-          </div>
-          <div className={`nav-item ${activeTab === 'voice-gen' ? 'active' : ''}`} onClick={() => setActiveTab('voice-gen')}>
-            <Music size={18} />
-            <span>AI Voice Studio</span>
-          </div>
-          <div className={`nav-item ${activeTab === 'launch' ? 'active' : ''}`} onClick={() => setActiveTab('launch')}>
-            <TrendingUp size={18} />
-            <span>Viral Launchpad</span>
-          </div>
-          <div className={`nav-item ${activeTab === 'voice' ? 'active' : ''}`} onClick={() => setActiveTab('voice')}>
-            <Volume2 size={18} />
+        <nav className="sidebar-nav">
+          <button
+            className={`nav-item ${activeTab === 'universal-studio' ? 'active' : ''}`}
+            onClick={() => setActiveTab('universal-studio')}
+          >
+            <Zap size={20} />
+            <span>Creative Studio</span>
+          </button>
+
+          <button
+            className={`nav-item ${activeTab === 'social-downloader' ? 'active' : ''}`}
+            onClick={() => setActiveTab('social-downloader')}
+          >
+            <Youtube size={20} />
+            <span>Downloader</span>
+          </button>
+
+          <button
+            className={`nav-item ${activeTab === 'forge' ? 'active' : ''}`}
+            onClick={() => setActiveTab('forge')}
+          >
+            <Layers size={20} />
+            <span>Forge Cinema</span>
+          </button>
+
+          <button
+            className={`nav-item ${activeTab === 'voice' ? 'active' : ''}`}
+            onClick={() => setActiveTab('voice')}
+          >
+            <Mic size={20} />
             <span>Voice Mastery</span>
-          </div>
-          <div className={`nav-item ${activeTab === 'forge' ? 'active' : ''}`} onClick={() => setActiveTab('forge')}>
-            <Sparkles size={18} color="var(--primary)" />
-            <span>Creative Forge</span>
-          </div>
+          </button>
+
+          <button
+            className={`nav-item ${activeTab === 'history' ? 'active' : ''}`}
+            onClick={() => setActiveTab('history')}
+          >
+            <History size={20} />
+            <span>Collections</span>
+          </button>
         </nav>
 
         <div className="history-section">
@@ -367,57 +439,146 @@ function App() {
         </header>
 
         <div className="stage-content">
-          {(activeTab === 'studio-am' || activeTab === 'studio-en') && (
+          {activeTab === 'universal-studio' && (
             <>
-              {/* Hero Input Section */}
-              <section className="input-hero fade-up">
-                <h2>{activeTab === 'studio-am' ? 'Amharic Transformation Studio' : 'English Transformation Studio'}</h2>
-                <div className="glass-box">
-                  <div className="pro-input-group">
-                    <input
-                      type="text"
-                      placeholder="Paste YouTube Link (English)"
-                      value={url}
-                      onChange={(e) => setUrl(e.target.value)}
-                      disabled={status === 'processing'}
-                    />
-                    <button className="action-btn" onClick={startAnalysis} disabled={status === 'processing' || !url}>
-                      {status === 'processing' ? <Loader2 size={18} className="spinning" /> : <Zap size={18} />}
-                      <span>{status === 'processing' ? 'Processing' : 'Analyze'}</span>
-                    </button>
+              {showMissionControl && !studioData && (
+                <section className="mission-control fade-up">
+                  <div className="mission-header mb-3">
+                    <h1>Mission Control 🚀</h1>
+                    <p>What is your goal for this creation session?</p>
                   </div>
-
-                  <div className="settings-row">
-                    <div className="setting-item">
-                      <Clock size={16} />
-                      <span>Target Duration</span>
-                      <input
-                        type="number"
-                        value={duration}
-                        onChange={(e) => setDuration(e.target.value)}
-                        disabled={status === 'processing'}
-                      />
-                      <span>Mins</span>
-                    </div>
-
-                    <div className="setting-item">
-                      <Globe size={16} />
-                      <span>Mode: {activeTab === 'studio-am' ? 'Amharic Generation' : 'English Synthesis'}</span>
-                    </div>
+                  <div className="mission-grid">
+                    {[
+                      {
+                        id: 'recreate',
+                        title: 'Viral Recreator',
+                        desc: 'Executive Producer mode. Synthesis + Auto-Editing.',
+                        icon: <Zap size={32} />,
+                        color: '#f59e0b'
+                      },
+                      {
+                        id: 'translate',
+                        title: 'Global Localizer',
+                        desc: 'Bridge languages. Full Scripts + Voice.',
+                        icon: <Globe size={32} />,
+                        color: '#3b82f6'
+                      },
+                      {
+                        id: 'shorts',
+                        title: 'Shorts Forge',
+                        desc: 'Extract high-energy vertical highlights.',
+                        icon: <Maximize size={32} />,
+                        color: '#ec4899'
+                      },
+                      {
+                        id: 'voice',
+                        title: 'Voice Over',
+                        desc: 'Generate pro AI narration only.',
+                        icon: <Mic size={32} />,
+                        color: '#8b5cf6'
+                      }
+                    ].map((m) => (
+                      <div
+                        key={m.id}
+                        className={`mission-card glass-box ${mission === m.id ? 'active' : ''}`}
+                        onClick={() => { setMission(m.id); setShowMissionControl(false); }}
+                      >
+                        <div className="mission-icon" style={{ color: m.color, background: `${m.color}15` }}>
+                          {m.icon}
+                        </div>
+                        <h3>{m.title}</h3>
+                        <p>{m.desc}</p>
+                        <ChevronRight className="mission-arrow" />
+                      </div>
+                    ))}
                   </div>
+                </section>
+              )}
 
-                  {status === 'processing' && (
-                    <div className="progress-loader">
-                      <div className="loader-track">
-                        <div className="loader-bar" style={{ width: `${progress}%` }} />
-                      </div>
-                      <div className="loader-status">
-                        {message} — {progress}%
-                      </div>
+              {(!showMissionControl || studioData) && (
+                <>
+                  <section className="input-hero fade-up">
+                    <div className="studio-header-row mb-2">
+                      <button className="back-mission" onClick={() => setShowMissionControl(true)}>
+                        <ChevronRight size={16} style={{ transform: 'rotate(180deg)' }} /> Back to Mission
+                      </button>
+                      <h2>
+                        {mission === 'recreate' ? 'Viral Recreator Studio' :
+                          mission === 'translate' ? 'Global Localization Studio' :
+                            mission === 'shorts' ? 'Shorts Forge Studio' : 'Universal Creation Studio'}
+                      </h2>
                     </div>
-                  )}
-                </div>
-              </section>
+                    <div className="glass-box">
+                      <div className="pro-input-group">
+                        <input
+                          type="text"
+                          placeholder="Paste YouTube Link (English)"
+                          value={url}
+                          onChange={(e) => setUrl(e.target.value)}
+                          disabled={status === 'processing'}
+                        />
+                        <button className="action-btn" onClick={startAnalysis} disabled={status === 'processing' || !url}>
+                          {status === 'processing' ? <Loader2 size={18} className="spinning" /> : <Zap size={18} />}
+                          <span>{status === 'processing' ? 'Processing' : 'Analyze'}</span>
+                        </button>
+                      </div>
+
+                      <div className="settings-row">
+                        <div className="setting-item">
+                          <Clock size={16} />
+                          <span>Target Duration</span>
+                          <input
+                            type="number"
+                            value={duration}
+                            onChange={(e) => setDuration(e.target.value)}
+                            disabled={status === 'processing'}
+                          />
+                          <span>Mins</span>
+                        </div>
+
+                        <div className="setting-item">
+                          <Globe size={16} />
+                          <select
+                            value={language}
+                            onChange={(e) => setLanguage(e.target.value)}
+                            className="lang-select-mini"
+                          >
+                            <option value="am">Amharic (ET)</option>
+                            <option value="en">English (US)</option>
+                            <option value="es">Spanish (ES)</option>
+                            <option value="fr">French (FR)</option>
+                          </select>
+                        </div>
+
+                        <div className="setting-item">
+                          <Layers size={16} />
+                          <select
+                            value={genre}
+                            onChange={(e) => setGenre(e.target.value)}
+                            className="lang-select-mini"
+                          >
+                            <option value="sermon">🔥 Sermon / Preaching</option>
+                            <option value="podcast">🎙️ Podcast / Talk</option>
+                            <option value="interview">🤝 Interview / Q&A</option>
+                            <option value="panel">👥 Panel Discussion</option>
+                          </select>
+                        </div>
+                      </div>
+
+                      {status === 'processing' && (
+                        <div className="progress-loader">
+                          <div className="loader-track">
+                            <div className="loader-bar" style={{ width: `${progress}%` }} />
+                          </div>
+                          <div className="loader-status">
+                            {message} — {progress}%
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </section>
+                </>
+              )}
 
               {/* Results Area */}
               {studioData && (
@@ -627,7 +788,7 @@ function App() {
                       <h3>Your Narration is Ready!</h3>
                       <audio controls src={ttsAudio} className="vs-custom-audio" />
                       <div className="vs-download-box">
-                        <a href={ttsAudio} download className="vs-dl-link">
+                        <a href={`http://localhost:8000/download-file?type=audio&filename=${encodeURIComponent(ttsAudio.split('/').pop())}`} className="vs-dl-link">
                           <Download size={18} />
                           Download Audio File (.mp3)
                         </a>
@@ -710,6 +871,120 @@ function App() {
                     </div>
                   </div>
                 </div>
+              </div>
+            </section>
+          )}
+
+          {activeTab === 'downloader' && (
+            <section className="downloader-studio fade-up">
+              <div className="voice-studio-header mb-2 text-center">
+                <h1>Social Media Downloader 📩</h1>
+                <p>Download your favorite videos in high quality with one click.</p>
+              </div>
+
+              <div className="downloader-container glass-box p-3">
+                <div className="pro-input-group mb-2">
+                  <input
+                    type="text"
+                    placeholder="Paste Social Media Video Link (YouTube, Instagram, TikTok, etc.)"
+                    value={downloaderUrl}
+                    onChange={(e) => setDownloaderUrl(e.target.value)}
+                    disabled={isFetchingInfo || downloadStatus === 'downloading'}
+                  />
+                  <button
+                    className="action-btn"
+                    onClick={fetchVideoInfo}
+                    disabled={!downloaderUrl || isFetchingInfo || downloadStatus === 'downloading'}
+                  >
+                    {isFetchingInfo ? <Loader2 size={18} className="spinning" /> : <Search size={18} />}
+                    <span>Fetch Video Info</span>
+                  </button>
+                </div>
+
+                {downloadStatus === 'downloading' && (
+                  <div className="progress-loader mb-3">
+                    <div className="loader-track">
+                      <div className="loader-bar" style={{ width: `${progress}%` }} />
+                    </div>
+                    <div className="loader-status">
+                      Downloading... This might take a moment.
+                    </div>
+                  </div>
+                )}
+
+                {videoInfo && !isFetchingInfo && (
+                  <div className="video-info-display fade-up">
+                    <div className="info-header mb-2">
+                      <div className="info-thumb">
+                        <img src={videoInfo.thumbnail} alt="Thumbnail" />
+                        <span className="duration-tag">{Math.floor(videoInfo.duration / 60)}:{(videoInfo.duration % 60).toString().padStart(2, '0')}</span>
+                      </div>
+                      <div className="info-details">
+                        <h2>{videoInfo.title}</h2>
+                        <p className="uploader">By {videoInfo.uploader}</p>
+                      </div>
+                    </div>
+
+                    <div className="format-selection-grid mb-3">
+                      <div className="panel-title">
+                        <Layers size={18} color="var(--primary)" />
+                        <h3>Select Format & Quality</h3>
+                      </div>
+                      <div className="formats-list">
+                        {videoInfo.formats
+                          .filter(f => f.resolution) // Only show formats with resolution
+                          .slice(0, 15) // Limit list
+                          .map((f, idx) => (
+                            <div
+                              key={idx}
+                              className={`format-card ${selectedFormat === f.format_id ? 'active' : ''}`}
+                              onClick={() => setSelectedFormat(f.format_id)}
+                            >
+                              <div className="format-main">
+                                <span className="res">{f.resolution}</span>
+                                <span className="ext">.{f.extension}</span>
+                              </div>
+                              <div className="format-sub">
+                                <span>{f.fps} fps</span>
+                                <span>{(f.filesize / (1024 * 1024)).toFixed(1)} MB</span>
+                              </div>
+                            </div>
+                          ))}
+                      </div>
+                    </div>
+
+                    <div className="vs-actions">
+                      <button
+                        className="vs-gen-btn highlight pulse-border"
+                        onClick={handleDownloadSocial}
+                        disabled={downloadStatus === 'downloading' || !selectedFormat}
+                      >
+                        {downloadStatus === 'downloading' ? <Loader2 size={18} className="spinning" /> : <Download size={18} />}
+                        <span>{downloadStatus === 'downloading' ? 'Downloading...' : 'Start Download'}</span>
+                      </button>
+                    </div>
+
+                    {downloadStatus === 'completed' && socialDownloadUrl && (
+                      <div className="vs-audio-card mt-3 fade-up">
+                        <div className="panel-title mb-1">
+                          <CheckCircle size={18} color="var(--success)" />
+                          <h3>Download Started!</h3>
+                        </div>
+                        <p>Your video is downloading. If it didn't start automatically, use the link below.</p>
+                        <a href={socialDownloadUrl} className="vs-dl-link mt-1">
+                          <Download size={16} /> Save to Disk (Manual)
+                        </a>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {downloadStatus === 'error' && (
+                  <div className="error-box glass-box mt-2">
+                    <AlertCircle size={20} color="var(--error)" />
+                    <p>{message}</p>
+                  </div>
+                )}
               </div>
             </section>
           )}
@@ -989,13 +1264,13 @@ function App() {
                               <h3 style={{ fontSize: '0.9rem', margin: 0 }}>Official Render</h3>
                             </div>
                             <video controls src={forgeVideoUrl} className="forge-main-video" />
-                            <a href={forgeVideoUrl} download className="vs-dl-link mt-1">
+                            <a href={`http://localhost:8000/download-file?type=video&filename=${encodeURIComponent(forgeVideoUrl.split('/').pop())}`} className="vs-dl-link mt-1">
                               <Download size={14} /> Download Final MP4
                             </a>
                           </div>
                         )}
 
-                        <a href={forgeAssets.audio_url} download className="vs-dl-link mt-1">
+                        <a href={`http://localhost:8000/download-file?type=audio&filename=${encodeURIComponent(forgeAssets.audio_url.split('/').pop())}`} className="vs-dl-link mt-1">
                           <Download size={16} /> Download Audio
                         </a>
                       </div>

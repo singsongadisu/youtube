@@ -17,7 +17,7 @@ class EnglishVideoRecreator:
         s = int(seconds % 60)
         return f"{m:02d}:{s:02d}"
 
-    def condense_from_segments(self, segments: list, target_duration_mins: int = 5) -> dict:
+    def condense_from_segments(self, segments: list, target_duration_mins: int = 5, genre: str = "sermon") -> dict:
         """
         🧬 V41: Segment-Aware Condensation
         Analyzes Whisper segments directly to preserve timing.
@@ -58,40 +58,72 @@ class EnglishVideoRecreator:
             
             duration = seg['end'] - seg['start']
             
+            # Genre-Specific Scoring
+            genre_bonus = 1.0
+            if genre == "interview":
+                q_words = ["who", "what", "how", "why", "tell", "explain", "question"]
+                if any(w in words[0:3] for w in q_words) or "?" in text:
+                    genre_bonus = 1.5
+            elif genre == "podcast":
+                hooks = ["interesting", "crazy", "secret", "imagine", "actually", "wow"]
+                if any(h in words for h in hooks):
+                    genre_bonus = 1.4
+            
             scored_segments.append({
                 "original": seg,
                 "clean_text": clean_text,
-                "score": density * multiplier,
+                "score": (density * multiplier) * genre_bonus,
                 "duration": duration,
                 "start_time": seg['start'],
                 "end_time": seg['end']
             })
 
-        # 3. Selection Strategy (Greedy Density Selection)
-        MAX_SECONDS = target_duration_mins * 60
-        # Sort by score to find the highlights
+        # 3. Selection Strategy (Dynamic Duration Fix)
+        # We need to ensure we pick enough segments to actually fill the target duration
+        target_seconds = target_duration_mins * 60
+        
+        # Sort by score but maintain some chronological proximity
         ranked = sorted(scored_segments, key=lambda x: x['score'], reverse=True)
         
         selection = []
         current_duration = 0
         
+        # Selection phase: Pick the "Gold" segments until duration is met
         for item in ranked:
-            if current_duration + item['duration'] <= MAX_SECONDS:
+            if current_duration + item['duration'] <= target_seconds:
                 selection.append(item)
                 current_duration += item['duration']
-            if current_duration >= MAX_SECONDS:
+            if current_duration >= target_seconds * 0.95: # Close enough
                 break
         
-        # 4. Sequential Order (Keep the flow of the video)
+        # 4. Sequential Order & Context-Bridge (Insight Islands)
         final_clips = sorted(selection, key=lambda x: x['start_time'])
-        self.selected_segments = final_clips # Store for roadmap generation
         
-        full_text = ". ".join([c['clean_text'] for c in final_clips])
+        # V45: Insight Islands Clustering
+        # If two highlights are within 30s of each other, we merge them into one continuous block
+        clustered_clips = []
+        if final_clips:
+            current_block = final_clips[0]
+            for i in range(1, len(final_clips)):
+                next_clip = final_clips[i]
+                gap = next_clip['start_time'] - current_block['end_time']
+                
+                if gap < 45: # Merge if gap is small/contextually relevant
+                    current_block['end_time'] = next_clip['end_time']
+                    current_block['clean_text'] += " " + next_clip['clean_text']
+                    current_block['duration'] = current_block['end_time'] - current_block['start_time']
+                else:
+                    clustered_clips.append(current_block)
+                    current_block = next_clip
+            clustered_clips.append(current_block)
+
+        self.selected_segments = clustered_clips
+        full_text = ". ".join([c['clean_text'] for c in clustered_clips])
         
         return {
             "text": full_text + ".",
-            "clips_count": len(final_clips),
-            "total_duration": current_duration
+            "clips_count": len(clustered_clips),
+            "total_duration": sum(c['duration'] for c in clustered_clips)
         }
 
     async def generate_metadata(self, title: str, condensed_text: str):

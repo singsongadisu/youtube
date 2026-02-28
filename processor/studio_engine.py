@@ -94,54 +94,111 @@ class StudioEngine:
         ]
         return thread
 
-    async def extract_editing_guide(self, whisper_segments, target_duration_mins: int, target_lang: str = "am", tone: str = "neutral"):
+    async def extract_editing_guide(self, whisper_segments, target_duration_mins: int, target_lang: str = "am", tone: str = "neutral", genre: str = "sermon"):
         """
-        Extracts key segments from Whisper output to match target duration.
-        Returns a list of guide items with timestamps.
+        🧬 V55: Genre-Aware Intelligence Engine
+        Dynamically extracts segments to match target duration and adapts strategy based on content genre.
         """
-        guide = []
+        if not whisper_segments: return []
         
         def clean_seg(seg):
             return {
                 "start": float(seg.get("start", 0)),
                 "end": float(seg.get("end", 0)),
-                "text": str(seg.get("text", ""))
+                "text": str(seg.get("text", "")).strip()
             }
         
         cleaned_segments = [clean_seg(s) for s in whisper_segments]
         total_source_duration = cleaned_segments[-1]['end'] if cleaned_segments else 0
+        target_seconds = target_duration_mins * 60
+        
+        # Heuristic: Adapt block duration to genre
+        # Interviews need shorter, punchier blocks to keep both speakers
+        if genre == "interview":
+            avg_block_duration = 60 # 1 minute Q&A blocks
+        elif genre == "podcast":
+            avg_block_duration = 120 # 2 minute discussion blocks
+        else: # sermon
+            avg_block_duration = 180 if target_duration_mins > 15 else 45
+            
+        num_blocks = max(3, int(target_seconds / avg_block_duration))
         
         if total_source_duration > 0:
-            target_seconds = target_duration_mins * 60
-            num_points = 10 
-            interval = total_source_duration / num_points
-            
+            interval = total_source_duration / num_blocks
             tasks = []
-            for i in range(num_points):
+            
+            for i in range(num_blocks):
                 time_mark = i * interval
-                closest_seg = min(cleaned_segments, key=lambda x: abs(x['start'] - time_mark))
                 
-                async def process_point(idx, seg):
-                    # Only translate if Amharic is the target
-                    suggestion = await self.translate_to_amharic(seg['text'], tone=tone) if target_lang == "am" else seg['text']
-                    vis_p = await self.generate_visual_prompt(seg['text'])
-                    vid_p = await self.generate_video_prompt(seg['text'])
+                # Genre-Specific Starter Detection
+                def get_best_starter(potential_segs):
+                    if not potential_segs: return None
+                    
+                    if genre == "interview":
+                        # Look for Q&A markers (Who, What, How, Why, Question mark)
+                        q_words = ["who", "what", "where", "when", "how", "why", "is", "are", "do", "does", "can"]
+                        am_q_words = ["ማን", "ምን", "የት", "መቼ", "እንዴት", "ለምን", "ነው", "ናቸው", "ያደርጋል", "ትችላለህ"]
+                        for s in potential_segs:
+                            t = s['text'].lower()
+                            if any(w in t for w in q_words + am_q_words) or "?" in t:
+                                return s
+                    
+                    if genre == "podcast":
+                        # Look for high-energy hooks or new topic markers
+                        hooks = ["so", "now", "let's", "well", "look", "interesting", "amazing", "እሺ", "አሁን", "ድንቅ", "የሚገርም"]
+                        for s in potential_segs:
+                            if any(s['text'].lower().startswith(h) for h in hooks):
+                                return s
+                                
+                    # Fallback to the longest/densest segment in the window
+                    return max(potential_segs, key=lambda x: len(x['text']))
+
+                potential_window = [s for s in cleaned_segments if abs(s['start'] - time_mark) < 40]
+                closest_seg = get_best_starter(potential_window)
+                if not closest_seg:
+                    closest_seg = min(cleaned_segments, key=lambda x: abs(x['start'] - time_mark))
+
+                async def process_block(idx, start_seg):
+                    block_segments = []
+                    current_t = start_seg['start']
+                    end_limit = current_t + avg_block_duration
+                    
+                    for s in cleaned_segments:
+                        if s['start'] >= current_t and s['end'] <= end_limit:
+                            block_segments.append(s)
+                    
+                    if not block_segments: # Safety
+                        block_segments = [start_seg]
+                        
+                    block_text = " ".join([s['text'] for s in block_segments])
+                    block_start = block_segments[0]['start']
+                    block_end = block_segments[-1]['end']
+                    
+                    # Translation & Prompt Gen
+                    suggestion = await self.translate_to_amharic(block_text[:300] + "...", tone=tone) if target_lang == "am" else block_text
+                    vis_p = await self.generate_visual_prompt(block_text)
+                    vid_p = await self.generate_video_prompt(block_text)
+                    
+                    genre_label = "🤝 Q&A Block" if genre == "interview" else "🎙️ Discussion" if genre == "podcast" else "🔥 Insight Block"
+                    
                     return {
                         "index": idx,
-                        "timestamp": f"{int(seg['start'] // 60):02d}:{int(seg['start'] % 60):02d}",
-                        "original_text": seg['text'],
+                        "timestamp_start": f"{int(block_start // 60):02d}:{int(block_start % 60):02d}",
+                        "timestamp_end": f"{int(block_end // 60):02d}:{int(block_end % 60):02d}",
+                        "duration": block_end - block_start,
+                        "original_text": block_text,
                         "narration_suggestion": suggestion,
                         "visual_prompt": vis_p,
                         "video_clip_prompt": vid_p,
-                        "edit_action": "🎬 Crop this highlight" if idx > 0 else "🌟 Opening Hook"
+                        "edit_action": f"{genre_label}: {round(block_end - block_start)}s"
                     }
-                tasks.append(process_point(i, closest_seg))
+                tasks.append(process_block(i, closest_seg))
             
             results = await asyncio.gather(*tasks)
             results.sort(key=lambda x: x["index"])
-            guide = results
+            return results
             
-        return guide
+        return []
 
     async def generate_visual_prompt(self, text: str):
         """Generates a professional AI image prompt with aspect ratio and transparency handling."""
@@ -221,18 +278,33 @@ class StudioEngine:
             srt_content += f"{i+1}\n{start} --> {end}\n{text}\n\n"
         return srt_content
 
-    async def generate_metadata_recommendations(self, title: str, transcript_segments, target_lang: str, tone: str = "neutral"):
+    async def generate_metadata_recommendations(self, title: str, transcript_segments, target_lang: str, tone: str = "neutral", genre: str = "sermon"):
         """Generates 3 titles and a full SEO description in the target language."""
         content_sample = " ".join([s['text'] for s in transcript_segments[:10]])
         theme = title if title else content_sample[:60]
         
-        # English Templates
-        en_titles = [
-            f"THE SECRET TO {theme.upper()}? (Explained)",
-            f"You Need to Hear This: {theme}",
-            f"{theme} - This Will Change Everything!"
-        ]
-        en_desc = f"In this video, we dive deep into {theme}. Discover the key principles that most people miss...\n\n#Success #Motivation #{theme.replace(' ', '')}"
+        # Genre-Specific English Templates
+        if genre == "interview":
+            en_titles = [
+                f"INTERVIEW: The Truth about {theme}",
+                f"Exclusive: {theme} (Full Discussion)",
+                f"How {theme} Changed Their Life"
+            ]
+            en_desc = f"In this exclusive interview, we explore {theme}. Listen to the deep insights shared by the experts.\n\n#Interview #Discussion #{theme.replace(' ', '')}"
+        elif genre == "podcast":
+            en_titles = [
+                f"PODCAST: Why {theme} Matters Now",
+                f"Decoding {theme} (Deep Dive)",
+                f"The Real Story behind {theme}"
+            ]
+            en_desc = f"Welcome back to the podcast. Today we are deep-diving into {theme} and uncovering the secrets most people miss.\n\n#Podcast #DeepDive #{theme.replace(' ', '')}"
+        else: # sermon
+            en_titles = [
+                f"SERMON: The Power of {theme}",
+                f"Life Changing: {theme} (Message)",
+                f"Why You Need {theme} in Your Life"
+            ]
+            en_desc = f"A powerful message about {theme}. Let this word transform your perspective and bring clarity for your journey.\n\n#Sermon #Faith #Blessing #{theme.replace(' ', '')}"
         
         if target_lang == "en":
             return {"titles": en_titles, "description": en_desc}
