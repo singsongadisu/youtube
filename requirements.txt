@@ -1,0 +1,12 @@
+fastapi
+uvicorn
+motor
+openai-whisper
+yt-dlp
+moviepy
+deep-translator
+requests
+edge-tts
+python-multipart
+python-dotenv
+pymongo
