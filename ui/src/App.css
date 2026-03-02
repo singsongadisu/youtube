@@ -1648,6 +1648,7 @@ h3,
 .visual-intent span {
   opacity: 0.9;
 }
+
 /* Social Downloader Styles */
 .downloader-studio {
   max-width: 1000px;
@@ -1798,6 +1799,7 @@ h3,
   font-weight: 800;
   background: linear-gradient(135deg, #fff 0%, #a5b4fc 100%);
   -webkit-background-clip: text;
+  background-clip: text;
   -webkit-text-fill-color: transparent;
   margin-bottom: 0.5rem;
 }
@@ -1918,4 +1920,68 @@ h3,
 .lang-select-mini option {
   background: var(--bg-main);
   color: #fff;
+}
+
+/* Progress Loader Styles */
+.progress-loader {
+  margin-top: 1.5rem;
+  padding: 1rem;
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.loader-track {
+  height: 6px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 10px;
+  overflow: hidden;
+  position: relative;
+}
+
+.loader-bar {
+  height: 100%;
+  background: linear-gradient(90deg, #6366f1 0%, #a855f7 50%, #6366f1 100%);
+  background-size: 200% 100%;
+  border-radius: 10px;
+  transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+  animation: shimmer-progress 2s linear infinite;
+  box-shadow: 0 0 10px rgba(99, 102, 241, 0.3);
+}
+
+.loader-status {
+  margin-top: 0.75rem;
+  font-size: 0.85rem;
+  color: var(--text-dim);
+  font-weight: 500;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+@keyframes shimmer-progress {
+  0% {
+    background-position: 200% 0;
+  }
+
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+/* Pulsing effect for the message itself */
+.loader-status {
+  animation: pulse-dim 2s ease-in-out infinite;
+}
+
+@keyframes pulse-dim {
+
+  0%,
+  100% {
+    opacity: 0.8;
+  }
+
+  50% {
+    opacity: 1;
+  }
 }

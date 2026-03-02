@@ -87,7 +87,8 @@ class VideoComposer:
             
             if status_callback:
                 progress = 75 + int((i / len(editing_guide)) * 20)
-                await status_callback(f"🎬 Processing clip {i+1}/{len(editing_guide)}...", progress)
+                await status_callback("🎞️ Compiling final video segments...", progress)
+            print(f"🎬 Processing clip {i+1}/{len(editing_guide)}...")
 
             # Subclip from original
             if hasattr(video, "subclipped"):

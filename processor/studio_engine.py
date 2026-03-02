@@ -96,8 +96,8 @@ class StudioEngine:
 
     async def extract_editing_guide(self, whisper_segments, target_duration_mins: int, target_lang: str = "am", tone: str = "neutral", genre: str = "sermon"):
         """
-        🧬 V55: Genre-Aware Intelligence Engine
-        Dynamically extracts segments to match target duration and adapts strategy based on content genre.
+        🧬 V70: Topic-Driven Context Trimming
+        Detects natural idea boundaries (pauses, transitions) to ensure clips start and end perfectly.
         """
         if not whisper_segments: return []
         
@@ -105,100 +105,143 @@ class StudioEngine:
             return {
                 "start": float(seg.get("start", 0)),
                 "end": float(seg.get("end", 0)),
-                "text": str(seg.get("text", "")).strip()
+                "text": str(seg.get("text", "")).strip(),
+                "duration": float(seg.get("end", 0)) - float(seg.get("start", 0))
             }
         
         cleaned_segments = [clean_seg(s) for s in whisper_segments]
-        total_source_duration = cleaned_segments[-1]['end'] if cleaned_segments else 0
         target_seconds = target_duration_mins * 60
         
-        # Heuristic: Adapt block duration to genre
-        # Interviews need shorter, punchier blocks to keep both speakers
-        if genre == "interview":
-            avg_block_duration = 60 # 1 minute Q&A blocks
-        elif genre == "podcast":
-            avg_block_duration = 120 # 2 minute discussion blocks
-        else: # sermon
-            avg_block_duration = 180 if target_duration_mins > 15 else 45
+        # 1. Boundary Detection Helper
+        def is_natural_boundary(seg, prev_seg=None):
+            text = seg['text'].lower()
+            # Transition Words (English & Amharic)
+            transitions = ["now", "first", "finally", "so", "but", "however", "therefore", "ስለዚህ", "ነገር ግን", "በመጀመሪያ", "በመጨረሻ"]
+            # Pause Detection (> 1.5 seconds gap)
+            pause = (seg['start'] - prev_seg['end']) > 1.5 if prev_seg else False
+            # Syntactic / Genre Markers
+            is_trans = any(text.startswith(t) for t in transitions)
+            is_question = "?" in text or "?" in (prev_seg['text'] if prev_seg else "")
             
-        num_blocks = max(3, int(target_seconds / avg_block_duration))
+            return pause or is_trans or is_question
+
+        # 2. Scoring Phase
+        scored_segments = []
+        for i, s in enumerate(cleaned_segments):
+            text = s['text'].lower()
+            if not text: continue
+            
+            score = len(text)
+            # Bonus for starters
+            if is_natural_boundary(s, cleaned_segments[i-1] if i > 0 else None):
+                score *= 1.4
+            
+            # Genre Bonuses
+            if genre == "interview" and ("?" in text): score *= 1.6
+            elif genre == "podcast" and any(w in text for w in ["interesting", "incredible"]): score *= 1.3
+            
+            scored_segments.append({**s, "relevance": score, "used": False, "orig_idx": i})
+
+        # 3. Greedy Idea Filling
+        islands = []
+        current_dur = 0
+        ranked = sorted(scored_segments, key=lambda x: x['relevance'], reverse=True)
         
-        if total_source_duration > 0:
-            interval = total_source_duration / num_blocks
-            tasks = []
+        # Max reasonable idea size (5 mins), but we prefer natural ends
+        MAX_IDEA_DUR = 300 
+        
+        for root in ranked:
+            if current_dur >= target_seconds: break
+            if root['used']: continue
             
-            for i in range(num_blocks):
-                time_mark = i * interval
+            idx = root['orig_idx']
+            island_indices = {idx}
+            root['used'] = True
+            
+            # Expand Backward until a boundary or limit
+            curr_start_idx = idx
+            while curr_start_idx > 0:
+                prev = scored_segments[curr_start_idx - 1]
+                if prev['used']: break
                 
-                # Genre-Specific Starter Detection
-                def get_best_starter(potential_segs):
-                    if not potential_segs: return None
-                    
-                    if genre == "interview":
-                        # Look for Q&A markers (Who, What, How, Why, Question mark)
-                        q_words = ["who", "what", "where", "when", "how", "why", "is", "are", "do", "does", "can"]
-                        am_q_words = ["ማን", "ምን", "የት", "መቼ", "እንዴት", "ለምን", "ነው", "ናቸው", "ያደርጋል", "ትችላለህ"]
-                        for s in potential_segs:
-                            t = s['text'].lower()
-                            if any(w in t for w in q_words + am_q_words) or "?" in t:
-                                return s
-                    
-                    if genre == "podcast":
-                        # Look for high-energy hooks or new topic markers
-                        hooks = ["so", "now", "let's", "well", "look", "interesting", "amazing", "እሺ", "አሁን", "ድንቅ", "የሚገርም"]
-                        for s in potential_segs:
-                            if any(s['text'].lower().startswith(h) for h in hooks):
-                                return s
-                                
-                    # Fallback to the longest/densest segment in the window
-                    return max(potential_segs, key=lambda x: len(x['text']))
+                # If we found a boundary, we STOP before it (so the current clip starts at the boundary)
+                if is_natural_boundary(cleaned_segments[curr_start_idx], cleaned_segments[curr_start_idx-1]):
+                    break
+                
+                prev['used'] = True
+                island_indices.add(prev['orig_idx'])
+                curr_start_idx -= 1
+                if (cleaned_segments[idx]['end'] - cleaned_segments[curr_start_idx]['start']) > MAX_IDEA_DUR: break
 
-                potential_window = [s for s in cleaned_segments if abs(s['start'] - time_mark) < 40]
-                closest_seg = get_best_starter(potential_window)
-                if not closest_seg:
-                    closest_seg = min(cleaned_segments, key=lambda x: abs(x['start'] - time_mark))
+            # Expand Forward until a boundary or limit
+            curr_end_idx = idx
+            while curr_end_idx < len(scored_segments) - 1:
+                nxt = scored_segments[curr_end_idx + 1]
+                if nxt['used']: break
+                
+                # Check if the NEXT segment is a boundary (meaning this idea ends here)
+                if is_natural_boundary(cleaned_segments[curr_end_idx+1], cleaned_segments[curr_end_idx]):
+                    break
+                    
+                nxt['used'] = True
+                island_indices.add(nxt['orig_idx'])
+                curr_end_idx += 1
+                if (cleaned_segments[curr_end_idx]['end'] - cleaned_segments[idx]['start']) > MAX_IDEA_DUR: break
 
-                async def process_block(idx, start_seg):
-                    block_segments = []
-                    current_t = start_seg['start']
-                    end_limit = current_t + avg_block_duration
-                    
-                    for s in cleaned_segments:
-                        if s['start'] >= current_t and s['end'] <= end_limit:
-                            block_segments.append(s)
-                    
-                    if not block_segments: # Safety
-                        block_segments = [start_seg]
-                        
-                    block_text = " ".join([s['text'] for s in block_segments])
-                    block_start = block_segments[0]['start']
-                    block_end = block_segments[-1]['end']
-                    
-                    # Translation & Prompt Gen
-                    suggestion = await self.translate_to_amharic(block_text[:300] + "...", tone=tone) if target_lang == "am" else block_text
-                    vis_p = await self.generate_visual_prompt(block_text)
-                    vid_p = await self.generate_video_prompt(block_text)
-                    
-                    genre_label = "🤝 Q&A Block" if genre == "interview" else "🎙️ Discussion" if genre == "podcast" else "🔥 Insight Block"
-                    
-                    return {
-                        "index": idx,
-                        "timestamp_start": f"{int(block_start // 60):02d}:{int(block_start % 60):02d}",
-                        "timestamp_end": f"{int(block_end // 60):02d}:{int(block_end % 60):02d}",
-                        "duration": block_end - block_start,
-                        "original_text": block_text,
-                        "narration_suggestion": suggestion,
-                        "visual_prompt": vis_p,
-                        "video_clip_prompt": vid_p,
-                        "edit_action": f"{genre_label}: {round(block_end - block_start)}s"
-                    }
-                tasks.append(process_block(i, closest_seg))
+            sorted_idxs = sorted(list(island_indices))
+            island_segments = [cleaned_segments[i] for i in sorted_idxs]
             
-            results = await asyncio.gather(*tasks)
-            results.sort(key=lambda x: x["index"])
-            return results
+            island_text = " ".join([s['text'] for s in island_segments])
+            actual_dur = island_segments[-1]['end'] - island_segments[0]['start']
             
-        return []
+            # Precision V41: Hard Stop & Micro-Trimming
+            if current_dur + actual_dur > target_seconds * 1.05:
+                # If it overflows, try to trim the final island to fit perfectly
+                remaining = target_seconds - current_dur
+                if remaining > 30: # Only bother if we have a decent chunk left
+                    island_segments[-1]['end'] = island_segments[0]['start'] + remaining
+                    actual_dur = remaining
+                else:
+                    # Too small to bother, skip this island
+                    continue
+
+            islands.append({
+                "start": island_segments[0]['start'],
+                "end": island_segments[-1]['end'],
+                "text": island_text,
+                "duration": actual_dur
+            })
+            current_dur += actual_dur
+            if current_dur >= target_seconds: break
+
+        # Sort chronologically
+        islands.sort(key=lambda x: x['start'])
+        
+        # 4. Packaging
+        tasks = []
+        for i, island in enumerate(islands):
+            async def process_island(idx, data):
+                suggestion = await self.translate_to_amharic(data['text'][:300] + "...", tone=tone) if target_lang == "am" else data['text']
+                vis_p = await self.generate_visual_prompt(data['text'])
+                vid_p = await self.generate_video_prompt(data['text'])
+                label = "💡 Concept" if genre == "sermon" else "🤝 Q&A" if genre == "interview" else "🎙️ Topic"
+                
+                return {
+                    "index": idx,
+                    "timestamp_start": f"{int(data['start'] // 60):02d}:{int(data['start'] % 60):02d}",
+                    "timestamp_end": f"{int(data['end'] // 60):02d}:{int(data['end'] % 60):02d}",
+                    "duration": data['duration'],
+                    "original_text": data['text'],
+                    "narration_suggestion": suggestion,
+                    "visual_prompt": vis_p,
+                    "video_clip_prompt": vid_p,
+                    "edit_action": f"{label}: {round(data['duration'])}s (Idea-based cut)"
+                }
+            tasks.append(process_island(i, island))
+
+        results = await asyncio.gather(*tasks)
+        print(f"🎨 Topic-Driven Selection: Request {target_duration_mins}m | Planned {round(current_dur/60, 2)}m")
+        return results
 
     async def generate_visual_prompt(self, text: str):
         """Generates a professional AI image prompt with aspect ratio and transparency handling."""

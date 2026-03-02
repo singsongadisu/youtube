@@ -57,7 +57,7 @@ class YouTubeAmharicCreator:
                 await asyncio.sleep(20) # Ping every 20 seconds
                 if stop_heartbeat.is_set(): break
                 heartbeat_count += 1
-                msg = f"✍️ Still transcribing... (Step {heartbeat_count})"
+                msg = "✍️ Analyzing content structure..."
                 if heartbeat_count > 3:
                     msg += " [This is a long video, still working!]"
                 await update_status(msg, 40)

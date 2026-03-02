@@ -93,14 +93,14 @@ class EnglishVideoRecreator:
             if current_duration + item['duration'] <= target_seconds:
                 selection.append(item)
                 current_duration += item['duration']
-            if current_duration >= target_seconds * 0.95: # Close enough
+            if current_duration >= target_seconds: 
                 break
         
         # 4. Sequential Order & Context-Bridge (Insight Islands)
         final_clips = sorted(selection, key=lambda x: x['start_time'])
         
-        # V45: Insight Islands Clustering
-        # If two highlights are within 30s of each other, we merge them into one continuous block
+        # V45: Capped Clustering
+        # If two highlights are within 45s of each other, we merge them into one continuous block
         clustered_clips = []
         if final_clips:
             current_block = final_clips[0]
@@ -108,7 +108,9 @@ class EnglishVideoRecreator:
                 next_clip = final_clips[i]
                 gap = next_clip['start_time'] - current_block['end_time']
                 
-                if gap < 45: # Merge if gap is small/contextually relevant
+                # Only merge if it doesn't push us waaaaay over the limit
+                current_total = sum(c['duration'] for c in clustered_clips) + (next_clip['end_time'] - current_block['start_time'])
+                if gap < 45 and current_total <= target_seconds * 1.1:
                     current_block['end_time'] = next_clip['end_time']
                     current_block['clean_text'] += " " + next_clip['clean_text']
                     current_block['duration'] = current_block['end_time'] - current_block['start_time']
@@ -118,12 +120,17 @@ class EnglishVideoRecreator:
             clustered_clips.append(current_block)
 
         self.selected_segments = clustered_clips
+        total_final_dur = sum(c['duration'] for c in clustered_clips)
+        
+        # Audit Log
+        print(f"📊 Recreator Audit: Request {target_duration_mins}m | Planned {round(total_final_dur/60, 2)}m")
+        
         full_text = ". ".join([c['clean_text'] for c in clustered_clips])
         
         return {
             "text": full_text + ".",
             "clips_count": len(clustered_clips),
-            "total_duration": sum(c['duration'] for c in clustered_clips)
+            "total_duration": total_final_dur
         }
 
     async def generate_metadata(self, title: str, condensed_text: str):
