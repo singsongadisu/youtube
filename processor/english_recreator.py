@@ -99,25 +99,38 @@ class EnglishVideoRecreator:
         # 4. Sequential Order & Context-Bridge (Insight Islands)
         final_clips = sorted(selection, key=lambda x: x['start_time'])
         
-        # V45: Capped Clustering
+        # V46: Strict Capped Clustering
         # If two highlights are within 45s of each other, we merge them into one continuous block
         clustered_clips = []
         if final_clips:
             current_block = final_clips[0]
+            current_total_dur = 0
+            
             for i in range(1, len(final_clips)):
                 next_clip = final_clips[i]
                 gap = next_clip['start_time'] - current_block['end_time']
                 
-                # Only merge if it doesn't push us waaaaay over the limit
-                current_total = sum(c['duration'] for c in clustered_clips) + (next_clip['end_time'] - current_block['start_time'])
-                if gap < 45 and current_total <= target_seconds * 1.1:
+                # Check potential new duration if merged
+                potential_dur = next_clip['end_time'] - current_block['start_time']
+                
+                # Only merge if it's a tight gap and doesn't push us over the hard limit
+                if gap < 45 and (current_total_dur + potential_dur) <= target_seconds:
                     current_block['end_time'] = next_clip['end_time']
                     current_block['clean_text'] += " " + next_clip['clean_text']
                     current_block['duration'] = current_block['end_time'] - current_block['start_time']
                 else:
                     clustered_clips.append(current_block)
+                    current_total_dur += current_block['duration']
                     current_block = next_clip
-            clustered_clips.append(current_block)
+            
+            # Final check for the last block
+            if (current_total_dur + current_block['duration']) > target_seconds:
+                # Trim to fit exactly
+                current_block['duration'] = max(0, target_seconds - current_total_dur)
+                current_block['end_time'] = current_block['start_time'] + current_block['duration']
+                
+            if current_block['duration'] > 0:
+                clustered_clips.append(current_block)
 
         self.selected_segments = clustered_clips
         total_final_dur = sum(c['duration'] for c in clustered_clips)

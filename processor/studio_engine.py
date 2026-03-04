@@ -194,15 +194,15 @@ class StudioEngine:
             island_text = " ".join([s['text'] for s in island_segments])
             actual_dur = island_segments[-1]['end'] - island_segments[0]['start']
             
-            # Precision V41: Hard Stop & Micro-Trimming
-            if current_dur + actual_dur > target_seconds * 1.05:
-                # If it overflows, try to trim the final island to fit perfectly
+            # Precision V42: Strict Hard Stop & Micro-Trimming
+            if current_dur + actual_dur > target_seconds:
+                # If it overflows, trim the final island to fit EXACTLY
                 remaining = target_seconds - current_dur
-                if remaining > 30: # Only bother if we have a decent chunk left
+                if remaining > 0:
                     island_segments[-1]['end'] = island_segments[0]['start'] + remaining
                     actual_dur = remaining
                 else:
-                    # Too small to bother, skip this island
+                    # No time left, skip this island
                     continue
 
             islands.append({

@@ -211,8 +211,12 @@ class VideoComposer:
             try:
                 bg_music = AudioFileClip(str(bg_path)).multiply_volume(0.12)
                 if bg_music.duration < narration_audio.duration:
-                    from moviepy.audio.fx.all import audio_loop
-                    bg_music = audio_loop(bg_music, duration=narration_audio.duration)
+                    try:
+                        from moviepy.audio.fx import AudioLoop
+                        bg_music = AudioLoop(duration=narration_audio.duration).apply(bg_music)
+                    except ImportError:
+                        from moviepy.audio.fx.all import audio_loop
+                        bg_music = audio_loop(bg_music, duration=narration_audio.duration)
                 else:
                     bg_music = bg_music.with_duration(narration_audio.duration)
                 from moviepy import CompositeAudioClip

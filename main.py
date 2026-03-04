@@ -76,7 +76,7 @@ class YouTubeAmharicCreator:
         # 3. Script Analysis
         # 3. Studio Engine Analysis
         await update_status("🧠 Analyzing content strategy...", 70)
-        studio = StudioEngine()
+        # studio is already initialized at line 26
         
         # The UI sends target_duration in minutes.
         target_duration_mins = max(1, target_duration)
@@ -129,7 +129,8 @@ class YouTubeAmharicCreator:
             "target_lang": target_lang,
             "editing_guide": results_map["editing_guide"],
             "viral_hooks": results_map["hooks"],
-            "thumbnail_data": {"text_prompt": results_map["thumbnail_data"], "image_url": studio.generate_ai_image_url(results_map["thumbnail_data"])},
+            "thumbnail_prompt": results_map["thumbnail_data"],
+            "thumbnail_image_url": studio.generate_ai_image_url(results_map["thumbnail_data"]),
             "metadata": results_map["metadata"],
             "chapters": results_map["chapters"],
             "shorts_clip": results_map["shorts_clip"],
