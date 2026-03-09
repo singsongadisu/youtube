@@ -22,7 +22,7 @@ VIDEO_DIR.mkdir(parents=True, exist_ok=True)
 DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 AUDIO_DIR.mkdir(parents=True, exist_ok=True)
 
-from main import BethelStudioCreator
+from main import YouTubeStudioCreator
 from processor.tts_engine import TTSEngine
 from processor.db import DatabaseManager
 from processor.creative_engine import CreativeEngine
@@ -31,7 +31,7 @@ from processor.downloader import VideoDownloader
 app = FastAPI()
 
 # Shared instances
-creator = BethelStudioCreator()
+creator = YouTubeStudioCreator()
 db_manager = DatabaseManager()
 creative_engine = CreativeEngine()
 video_downloader = VideoDownloader(download_path=DOWNLOAD_DIR)
@@ -44,16 +44,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-class ChallengeAttempt(BaseModel):
-    typed_phrase: str
-    is_correct: bool
-
-@app.post("/log-attempt")
-async def log_attempt(attempt: ChallengeAttempt):
-    status = "SUCCESS" if attempt.is_correct else "FAILED"
-    print(f"\n[LOGIN CHALLENGE] Attempt: {status} | Typed: '{attempt.typed_phrase}'")
-    return {"status": "ok"}
 
 @app.get("/videos")
 async def list_videos():

@@ -28,9 +28,7 @@ function App() {
   const [showMissionControl, setShowMissionControl] = useState(true);
   const [ttsAudio, setTtsAudio] = useState(null);
   const [isGeneratingTTS, setIsGeneratingTTS] = useState(false);
-  const [showWelcome, setShowWelcome] = useState(!localStorage.getItem('bethel_welcome_seen'));
-  const [welcomeCode, setWelcomeCode] = useState('');
-  const [welcomeError, setWelcomeError] = useState('');
+  const [showWelcome, setShowWelcome] = useState(!localStorage.getItem('youtube_studio_welcome_seen'));
 
   // Social Downloader State
   const [downloaderUrl, setDownloaderUrl] = useState('');
@@ -417,7 +415,7 @@ function App() {
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-dot" />
-          <span className="brand-name">Bethel Studio</span>
+          <span className="brand-name">YouTube Studio</span>
         </div>
 
         <nav className="sidebar-nav">
@@ -934,7 +932,7 @@ function App() {
                         <div className="yt-mock-avatar" />
                         <div className="yt-mock-text">
                           <h3 className="yt-mock-title">{studioData.metadata?.titles[0]}</h3>
-                          <p className="yt-mock-meta">Bethel Studio • 1.2M views • 2 hours ago</p>
+                          <p className="yt-mock-meta">YouTube Studio • 1.2M views • 2 hours ago</p>
                         </div>
                       </div>
                     </div>
@@ -1406,7 +1404,7 @@ function App() {
           <div className="modal-overlay">
             <div className="welcome-modal fade-up">
               <div className="welcome-header">
-                <h1>Welcome to Bethel Studio ✨</h1>
+                <h1>Welcome to YouTube Studio ✨</h1>
                 <p>Your AI-powered creative partner.</p>
               </div>
               <div className="welcome-steps">
@@ -1432,52 +1430,9 @@ function App() {
                   </div>
                 </div>
               </div>
-              <div className="welcome-challenge mt-2">
-                <span className="hook-tag">Authentication Required</span>
-                <p className="mt-2" style={{ fontSize: '0.9rem', color: 'var(--text-dim)' }}>song said ናፍቀሽኛል</p>
-                <p className="mt-1 no-select" style={{ fontSize: '1rem', color: 'var(--text-dim)' }}>Please type: <strong style={{ color: 'var(--primary)' }}>እኔም ናፍቀኸኛል</strong></p>
-                <input
-                  type="text"
-                  className="vs-textarea"
-                  style={{ height: '45px', marginTop: '10px', textAlign: 'center', fontSize: '1.1rem' }}
-                  placeholder="Type the magic phrase..."
-                  value={welcomeCode}
-                  onPaste={(e) => e.preventDefault()}
-                  onChange={(e) => {
-                    setWelcomeCode(e.target.value);
-                    setWelcomeError('');
-                  }}
-                />
-                {welcomeError && (
-                  <p className="fade-up" style={{ color: '#ff4444', fontSize: '0.85rem', marginTop: '8px', fontWeight: 'bold' }}>
-                    <AlertCircle size={14} style={{ verticalAlign: 'middle', marginRight: '4px' }} />
-                    {welcomeError}
-                  </p>
-                )}
-              </div>
-              <button className="welcome-btn mt-3" onClick={async () => {
-                const isCorrect = welcomeCode === "እኔም ናፍቀኸኛል";
-
-                // Log the attempt to the backend
-                try {
-                  await fetch('/log-attempt', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                      typed_phrase: welcomeCode,
-                      is_correct: isCorrect
-                    })
-                  });
-                } catch (err) {
-                  console.error("Failed to log attempt:", err);
-                }
-
-                if (isCorrect) {
-                  setShowWelcome(false);
-                  localStorage.setItem('bethel_welcome_seen', 'true');
-                } else {
-                  setWelcomeError("song said ናፍቀሽኛል replay as well");
-                }
+              <button className="welcome-btn mt-3" onClick={() => {
+                setShowWelcome(false);
+                localStorage.setItem('youtube_studio_welcome_seen', 'true');
               }}>
                 Let's Start Creating
               </button>

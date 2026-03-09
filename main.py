@@ -8,7 +8,7 @@ from audio.generator import AudioEngine
 from visual.editor import VisualEngine
 from pathlib import Path
 
-class BethelStudioCreator:
+class YouTubeStudioCreator:
     def __init__(self):
         self.base_dir = Path(__file__).parent.absolute()
         self.downloader = VideoDownloader(download_path=self.base_dir / "assets/downloads")

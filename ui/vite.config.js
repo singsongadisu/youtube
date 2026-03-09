@@ -24,7 +24,7 @@ export default defineConfig({
       '/video-info': 'http://localhost:8000',
       '/download-social': 'http://localhost:8000',
       '/static': 'http://localhost:8000',
-      '/log-attempt': 'http://localhost:8000',
+
       '/download-file': 'http://localhost:8000'
     }
   }
