@@ -47,13 +47,19 @@ class StudioEngine:
                     best_start_idx = i
                     
         best_seg = segments[best_start_idx]
-    async def translate_to_amharic(self, text: str, tone: str = "neutral"):
+    async def translate_text(self, text: str, target_lang: str = "am", tone: str = "neutral"):
         """
-        Translates text to Amharic with an optional 'Tone'.
+        Translates text to a target language with an optional 'Tone'.
         Tones: 'neutral', 'viral', 'preaching', 'news'
         """
         if not text: return ""
+        if target_lang == "en": return text # Optimization
+        
         try:
+            # Re-initialize translator if target changed
+            if self.translator.target != target_lang:
+                self.translator = GoogleTranslator(source='auto', target=target_lang)
+            
             # Add tone instructions if needed
             pre_prompt = ""
             if tone == "viral": pre_prompt = "🔥 Viral Style: "
@@ -221,7 +227,7 @@ class StudioEngine:
         tasks = []
         for i, island in enumerate(islands):
             async def process_island(idx, data):
-                suggestion = await self.translate_to_amharic(data['text'][:300] + "...", tone=tone) if target_lang == "am" else data['text']
+                suggestion = await self.translate_text(data['text'][:300] + "...", target_lang=target_lang, tone=tone)
                 vis_p = await self.generate_visual_prompt(data['text'])
                 vid_p = await self.generate_video_prompt(data['text'])
                 label = "💡 Concept" if genre == "sermon" else "🤝 Q&A" if genre == "interview" else "🎙️ Topic"
@@ -294,8 +300,8 @@ class StudioEngine:
             f"The truth about {first_min[:40]} revealed."
         ]
         
-        if target_lang == "am":
-            tasks = [self.translate_to_amharic(h, tone="viral") for h in hooks]
+        if target_lang != "en":
+            tasks = [self.translate_text(h, target_lang=target_lang, tone="viral") for h in hooks]
             return await asyncio.gather(*tasks)
             
         return hooks
@@ -312,9 +318,9 @@ class StudioEngine:
             start = self._format_srt_time(seg['start'])
             end = self._format_srt_time(seg['end'])
             
-            if target_lang == "am":
+            if target_lang != "en":
                 # We only translate short snippets to avoid server heavy load
-                text = await self.translate_to_amharic(seg['text'][:100])
+                text = await self.translate_text(seg['text'][:100], target_lang=target_lang)
             else:
                 text = seg['text']
             
@@ -352,9 +358,9 @@ class StudioEngine:
         if target_lang == "en":
             return {"titles": en_titles, "description": en_desc}
             
-        # For Amharic, we translate the high-energy templates in parallel
-        tasks = [self.translate_to_amharic(t, tone=tone) for t in en_titles]
-        tasks.append(self.translate_to_amharic(en_desc, tone=tone))
+        # Translate to target language in parallel
+        tasks = [self.translate_text(t, target_lang=target_lang, tone=tone) for t in en_titles]
+        tasks.append(self.translate_text(en_desc, target_lang=target_lang, tone=tone))
         
         results = await asyncio.gather(*tasks)
         am_titles = results[:3]
@@ -362,20 +368,27 @@ class StudioEngine:
         
         return {"titles": am_titles, "description": am_desc}
 
-    async def generate_chapters(self, transcript_segments):
+    async def generate_chapters(self, transcript_segments, target_lang: str = "en"):
         """
         🏆 V23: Advanced Chapter Generator
         Generates thematic and descriptive YouTube chapters.
+        V24: Hallucination Guard (Auto-translates distorted AI segments back to target lang).
         """
         if not transcript_segments: return "00:00 - Introduction"
         
         chapters = []
         # Ensure it always starts at 00:00
-        chapters.append("00:00 - Introduction & Hook")
+        intro_text = "Introduction & Hook"
+        if target_lang != "en":
+            intro_text = await self.translate_text(intro_text, target_lang=target_lang)
+        chapters.append(f"00:00 - {intro_text}")
         
         # Determine logical spacing (aim for 5-8 chapters)
         num_goals = 6
         step = len(transcript_segments) // num_goals
+        
+        titles_to_translate = []
+        timestamps = []
         
         for i in range(1, num_goals):
             idx = i * step
@@ -384,17 +397,26 @@ class StudioEngine:
             seg = transcript_segments[idx]
             time_str = f"{int(seg['start'] // 60):02d}:{int(seg['start'] % 60):02d}"
             
-            # Use V20 ranking logic to find the "Heaviest" sentence nearby for a title
+            # Find the "Heaviest" sentence nearby for a title
             sub_segments = transcript_segments[max(0, idx-2):min(len(transcript_segments), idx+3)]
-            best_seg = max(sub_segments, key=lambda x: len(x['text'])) # Shorthand for "Descriptive"
+            best_seg = max(sub_segments, key=lambda x: len(x['text']))
             
-            # Clean title (remove fluff)
             raw_title = best_seg['text'].strip().split(".")[0]
             title = (raw_title[:35] + "...") if len(raw_title) > 35 else raw_title
             
+            titles_to_translate.append(title)
+            timestamps.append(time_str)
+            
+        # Parallel translation to fix hallucinations
+        translated_titles = []
+        if titles_to_translate:
+            tasks = [self.translate_text(t, target_lang=target_lang) for t in titles_to_translate]
+            translated_titles = await asyncio.gather(*tasks)
+            
+        for i, title in enumerate(translated_titles):
             # Capitalize and clean
-            title = ' '.join(word.capitalize() for word in title.split())
-            chapters.append(f"{time_str} - {title}")
+            clean_title = ' '.join(word.capitalize() for word in title.split())
+            chapters.append(f"{timestamps[i]} - {clean_title}")
             
         return "\n".join(chapters)
 

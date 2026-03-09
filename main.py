@@ -8,7 +8,7 @@ from audio.generator import AudioEngine
 from visual.editor import VisualEngine
 from pathlib import Path
 
-class YouTubeAmharicCreator:
+class BethelStudioCreator:
     def __init__(self):
         self.base_dir = Path(__file__).parent.absolute()
         self.downloader = VideoDownloader(download_path=self.base_dir / "assets/downloads")
@@ -92,7 +92,7 @@ class YouTubeAmharicCreator:
             async def get_script():
                 text = studio_script_data["text"]
                 if target_lang != "en":
-                    return await studio.translate_to_amharic(text, tone=tone) # Should ideally support other languages too
+                    return await studio.translate_text(text, target_lang=target_lang, tone=tone)
                 return text
 
             studio_script_task = get_script()
@@ -100,7 +100,7 @@ class YouTubeAmharicCreator:
             editing_guide_task = en_recreator.extract_editing_roadmap(target_duration_mins)
         else:
             print(f"🌍 Mission: {mission.upper()} - Using Translation/Localization path...")
-            studio_script_task = studio.translate_to_amharic(source_text, tone=tone)
+            studio_script_task = studio.translate_text(source_text, target_lang=target_lang, tone=tone)
             metadata_task = studio.generate_metadata_recommendations(Path(audio_path).stem, segments, target_lang, tone, genre=genre)
             editing_guide_task = studio.extract_editing_guide(segments, target_duration_mins, target_lang, tone, genre=genre)
 
@@ -110,7 +110,7 @@ class YouTubeAmharicCreator:
             "hooks": studio.generate_hooks(segments[:50], target_lang=target_lang),
             "thumbnail_data": studio.generate_thumbnail_prompt(Path(audio_path).stem, segments),
             "metadata": metadata_task,
-            "chapters": studio.generate_chapters(segments),
+            "chapters": studio.generate_chapters(segments, target_lang=target_lang),
             "shorts_clip": asyncio.to_thread(studio.shorts_clip_selector, segments),
             "growth_launchpad": studio.generate_community_posts(Path(audio_path).stem, segments),
             "social_thread": studio.generate_social_thread(source_text, target_lang=target_lang),
@@ -176,7 +176,7 @@ class YouTubeAmharicCreator:
         return str(output_file)
 
 if __name__ == "__main__":
-    creator = YouTubeAmharicCreator()
+    creator = BethelStudioCreator()
     url = input("🔗 Enter YouTube Link: ")
     if url.strip():
         asyncio.run(creator.process_video(url))

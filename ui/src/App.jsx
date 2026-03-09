@@ -5,7 +5,7 @@ import {
   Layout, BookOpen, Layers, Zap,
   ChevronRight, ExternalLink, Download,
   Loader2, AlertCircle, CheckCircle, Split, Map, Sparkles, Image as ImageIcon, FileText, Globe, Maximize, X, Volume2, Info,
-  Music, Play, Pause, Save, TrendingUp, User, Target, Camera, Video, Film
+  Music, Play, Pause, Save, TrendingUp, User, Target, Camera, Video, Film, Trash2
 } from 'lucide-react';
 import './App.css';
 
@@ -28,6 +28,9 @@ function App() {
   const [showMissionControl, setShowMissionControl] = useState(true);
   const [ttsAudio, setTtsAudio] = useState(null);
   const [isGeneratingTTS, setIsGeneratingTTS] = useState(false);
+  const [showWelcome, setShowWelcome] = useState(!localStorage.getItem('bethel_welcome_seen'));
+  const [welcomeCode, setWelcomeCode] = useState('');
+  const [welcomeError, setWelcomeError] = useState('');
 
   // Social Downloader State
   const [downloaderUrl, setDownloaderUrl] = useState('');
@@ -68,7 +71,7 @@ function App() {
 
   const fetchNarrators = async () => {
     try {
-      const resp = await fetch('http://localhost:8000/narrators');
+      const resp = await fetch('/narrators');
       const data = await resp.json();
       setNarrators(data);
       // Set default narrator for English
@@ -81,19 +84,58 @@ function App() {
 
   const fetchProjects = async () => {
     try {
-      const resp = await fetch('http://localhost:8000/videos');
+      const resp = await fetch('/videos');
       const data = await resp.json();
       setProjects(data);
+
+      // Auto-reconnect logic if a project is still processing
+      const activeProject = data.find(p => p.status === 'processing');
+      if (activeProject && status === 'idle') {
+        reconnectToTask(activeProject._id);
+      }
     } catch (err) {
       console.error("Failed to fetch projects:", err);
     }
+  };
+
+  const reconnectToTask = (projectId) => {
+    setStatus('processing');
+    setMessage('Reconnecting to active task...');
+    setProgress(0);
+
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    ws.current = new WebSocket(`${protocol}//${window.location.host}/ws`);
+
+    ws.current.onopen = () => {
+      ws.current.send(JSON.stringify({ reconnect_id: projectId }));
+    };
+
+    ws.current.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      if (data.status === 'processing') {
+        setStatus('processing');
+        setMessage(data.message);
+        setProgress(data.progress);
+      } else if (data.status === 'completed') {
+        setStatus('completed');
+        setMessage(data.message);
+        setProgress(100);
+        setStudioData(data.studio_data);
+        setVsScript(data.studio_data.studio_script);
+        setVsLang(data.studio_data.target_lang);
+        fetchProjects();
+      } else if (data.status === 'error') {
+        setStatus('error');
+        setMessage(data.message);
+      }
+    };
   };
 
   const loadProject = async (id) => {
     try {
       setStatus('processing');
       setMessage('Retrieving from Database...');
-      const resp = await fetch(`http://localhost:8000/project/${id}`);
+      const resp = await fetch(`/project/${id}`);
       const data = await resp.json();
       if (data.studio_script) {
         setStudioData(data);
@@ -110,6 +152,25 @@ function App() {
     }
   };
 
+  const deleteProject = async (e, id) => {
+    e.stopPropagation();
+    if (!window.confirm("Permanently delete this project?")) return;
+
+    try {
+      const resp = await fetch(`/project/${id}`, { method: 'DELETE' });
+      const data = await resp.json();
+      if (data.status === 'success') {
+        fetchProjects();
+        if (studioData && studioData._id === id) {
+          setStudioData(null);
+          setStatus('idle');
+        }
+      }
+    } catch (err) {
+      console.error("Failed to delete project:", err);
+    }
+  };
+
   const startAnalysis = () => {
     if (!url) return;
     setStatus('processing');
@@ -117,14 +178,18 @@ function App() {
     setProgress(0);
     setStudioData(null);
 
-    ws.current = new WebSocket('ws://localhost:8000/ws/process');
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    ws.current = new WebSocket(`${protocol}//${window.location.host}/ws`);
     ws.current.onopen = () => {
       ws.current.send(JSON.stringify({ url, duration: parseInt(duration), language, mission, genre }));
     };
 
     ws.current.onmessage = (event) => {
       const data = JSON.parse(event.data);
-      if (data.status === 'processing') {
+      if (data.status === 'started') {
+        console.log("Task started with ID:", data.project_id);
+        fetchProjects(); // Update sidebar immediately
+      } else if (data.status === 'processing') {
         setMessage(data.message);
         setProgress(data.progress);
       } else if (data.status === 'completed') {
@@ -156,14 +221,14 @@ function App() {
 
   const downloadSourceVideo = () => {
     if (!studioData?.video_filename) return;
-    const downloadUrl = `http://localhost:8000/download-file?type=download&filename=${encodeURIComponent(studioData.video_filename)}`;
+    const downloadUrl = `/download-file?type=download&filename=${encodeURIComponent(studioData.video_filename)}`;
     window.location.href = downloadUrl;
   };
 
   const downloadRenderedVideo = () => {
     if (!studioData?.rendered_video_path) return;
     const filename = studioData.rendered_video_path.split(/[\\/]/).pop();
-    const downloadUrl = `http://localhost:8000/download-file?type=video&filename=${encodeURIComponent(filename)}`;
+    const downloadUrl = `/download-file?type=video&filename=${encodeURIComponent(filename)}`;
     window.location.href = downloadUrl;
   };
 
@@ -171,7 +236,7 @@ function App() {
     if (!text || isGeneratingTTS) return;
     setIsGeneratingTTS(true);
     try {
-      const resp = await fetch('http://localhost:8000/generate-tts', {
+      const resp = await fetch('/generate-tts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -197,7 +262,7 @@ function App() {
     if (!forgeScript || isRefining) return;
     setIsRefining(true);
     try {
-      const resp = await fetch('http://localhost:8000/refine-script', {
+      const resp = await fetch('/refine-script', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ script: forgeScript, style })
@@ -217,7 +282,7 @@ function App() {
     if (!idea) return;
     setForgeStatus('generating-script');
     try {
-      const resp = await fetch('http://localhost:8000/generate-creative-script', {
+      const resp = await fetch('/generate-creative-script', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ idea, duration: forgeDuration, lang: forgeLang })
@@ -241,7 +306,7 @@ function App() {
     if (!forgeScript) return;
     setForgeStatus('generating-assets');
     try {
-      const resp = await fetch('http://localhost:8000/approve-creative-project', {
+      const resp = await fetch('/approve-creative-project', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -268,7 +333,7 @@ function App() {
     setIsRenderingVideo(true);
     setForgeVideoUrl(null);
     try {
-      const resp = await fetch('http://localhost:8000/generate-forge-video', {
+      const resp = await fetch('/generate-forge-video', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -297,7 +362,7 @@ function App() {
     setSelectedFormat(null);
     setDownloadStatus('fetching');
     try {
-      const resp = await fetch(`http://localhost:8000/video-info?url=${encodeURIComponent(downloaderUrl)}`);
+      const resp = await fetch(`/video-info?url=${encodeURIComponent(downloaderUrl)}`);
       const data = await resp.json();
       if (data.error) {
         setDownloadStatus('error');
@@ -322,14 +387,14 @@ function App() {
     setDownloadStatus('downloading');
     setProgress(0);
     try {
-      const resp = await fetch('http://localhost:8000/download-social', {
+      const resp = await fetch('/download-social', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url: downloaderUrl, format_id: selectedFormat })
       });
       const data = await resp.json();
       if (data.status === 'completed') {
-        const forcedDownloadUrl = `http://localhost:8000/download-file?type=download&filename=${encodeURIComponent(data.filename)}`;
+        const forcedDownloadUrl = `/download-file?type=download&filename=${encodeURIComponent(data.filename)}`;
         setDownloadStatus('completed');
         setSocialDownloadUrl(forcedDownloadUrl);
         setProgress(100);
@@ -352,7 +417,7 @@ function App() {
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-dot" />
-          <span className="brand-name">Amharic Studio 2.0</span>
+          <span className="brand-name">Bethel Studio</span>
         </div>
 
         <nav className="sidebar-nav">
@@ -365,8 +430,8 @@ function App() {
           </button>
 
           <button
-            className={`nav-item ${activeTab === 'social-downloader' ? 'active' : ''}`}
-            onClick={() => setActiveTab('social-downloader')}
+            className={`nav-item ${activeTab === 'downloader' ? 'active' : ''}`}
+            onClick={() => setActiveTab('downloader')}
           >
             <Youtube size={20} />
             <span>Downloader</span>
@@ -377,7 +442,7 @@ function App() {
             onClick={() => setActiveTab('forge')}
           >
             <Layers size={20} />
-            <span>Forge Cinema</span>
+            <span>AI Video Creator</span>
           </button>
 
           <button
@@ -385,25 +450,53 @@ function App() {
             onClick={() => setActiveTab('voice')}
           >
             <Mic size={20} />
-            <span>Voice Mastery</span>
+            <span>AI Voice Studio</span>
           </button>
 
-          <button
-            className={`nav-item ${activeTab === 'history' ? 'active' : ''}`}
-            onClick={() => setActiveTab('history')}
-          >
-            <History size={20} />
-            <span>Collections</span>
-          </button>
+
         </nav>
 
         <div className="history-section">
           <h4 className="history-title">Recent Activity</h4>
           <div className="history-list">
-            {projects.length > 0 ? projects.slice(0, 8).map((p, i) => (
-              <div className="history-item" key={i} onClick={() => loadProject(p._id)} title={p.title}>
-                <History size={14} style={{ marginRight: '8px' }} />
-                <span className="truncate">{p.title}</span>
+            {projects.length > 0 ? projects.slice(0, 10).map((p, i) => (
+              <div
+                className={`history-item ${p.status === 'processing' ? 'processing-pulse' : ''}`}
+                key={i}
+                onClick={() => p.status === 'processing' ? reconnectToTask(p._id) : loadProject(p._id)}
+                title={p.title}
+              >
+                {p.status === 'processing' ? (
+                  <Loader2 size={14} className="history-icon spin" />
+                ) : p.mission === 'recreate' ? (
+                  <Zap size={14} className="history-icon text-primary" />
+                ) : p.mission === 'translate' ? (
+                  <Globe size={14} className="history-icon text-secondary" />
+                ) : (
+                  <History size={14} className="history-icon-static" />
+                )}
+
+                <div className="history-info">
+                  <span className="truncate">{p.title}</span>
+                  <div className="history-meta">
+                    {p.status === 'processing' ? (
+                      <span className="status-badge processing">Processing {p.progress}%</span>
+                    ) : (
+                      <span className="status-badge completed">Ready</span>
+                    )}
+                    {p.target_lang && <span className="lang-badge">{p.target_lang}</span>}
+                  </div>
+                </div>
+                <div className="history-actions">
+                  <button
+                    className="delete-btn"
+                    onClick={(e) => deleteProject(e, p._id)}
+                    title="Delete Project"
+                  >
+                    <Trash2 size={12} />
+                  </button>
+                  <ChevronRight size={12} className="history-arrow" />
+                </div>
               </div>
             )) : <span style={{ fontSize: '0.8rem', opacity: 0.3 }}>No projects yet</span>}
           </div>
@@ -416,24 +509,24 @@ function App() {
           <div className="top-tools">
             {studioData && (
               <>
-                <button className="tool-btn" onClick={downloadSRT}>
+                <button className="tool-btn" onClick={downloadSRT} title="Download subtitle file for YouTube/Facebook">
                   <FileText size={16} />
-                  <span>Export .SRT</span>
+                  <span>Export .SRT (Subtitles)</span>
                 </button>
                 <button className="tool-btn highlight" onClick={downloadSourceVideo}>
                   <Youtube size={16} />
-                  <span>Download Source Video</span>
+                  <span>Download Original</span>
                 </button>
                 {studioData.rendered_video_path && (
-                  <button className="tool-btn highlight pulse-border" onClick={downloadRenderedVideo}>
+                  <button className="tool-btn highlight pulse-border" onClick={downloadRenderedVideo} title="Download the AI-edited version of your video">
                     <Zap size={16} />
-                    <span>Download Rendered (7m)</span>
+                    <span>Download Edited Video</span>
                   </button>
                 )}
               </>
             )}
           </div>
-          <div className="user-profile">
+          <div className="user-profile" onClick={() => setShowWelcome(true)} style={{ cursor: 'pointer' }} title="Show Welcome Guide">
             <HelpCircle size={18} color="var(--text-dark)" />
           </div>
         </header>
@@ -444,8 +537,8 @@ function App() {
               {showMissionControl && !studioData && (
                 <section className="mission-control fade-up">
                   <div className="mission-header mb-3">
-                    <h1>Mission Control 🚀</h1>
-                    <p>What is your goal for this creation session?</p>
+                    <h1>Create Something New 🚀</h1>
+                    <p>What would you like to build today?</p>
                   </div>
                   <div className="mission-grid">
                     {[
@@ -507,75 +600,82 @@ function App() {
                           mission === 'translate' ? 'Global Localization Studio' :
                             mission === 'shorts' ? 'Shorts Forge Studio' : 'Universal Creation Studio'}
                       </h2>
+                      <div className="glass-box">
+                        <div className="studio-input-wrapper">
+                          <div className="studio-input-group">
+                            <Search className="input-icon" size={18} />
+                            <input
+                              type="text"
+                              placeholder="Paste YouTube Link or Video URL..."
+                              value={url}
+                              onChange={(e) => setUrl(e.target.value)}
+                            />
+                            <button className="sample-btn" onClick={() => setUrl('https://www.youtube.com/watch?v=dQw4w9WgXcQ')}>
+                              Try Sample
+                            </button>
+                          </div>
+                        </div>
+                        <div className="action-row mt-2">
+                          <button className="action-btn" onClick={startAnalysis} disabled={status === 'processing' || !url}>
+                            {status === 'processing' ? <Loader2 size={18} className="spinning" /> : <Zap size={18} />}
+                            <span>{status === 'processing' ? 'Processing' : 'Analyze'}</span>
+                          </button>
+                        </div>
+                      </div>
                     </div>
-                    <div className="glass-box">
-                      <div className="pro-input-group">
+
+                    <div className="settings-row">
+                      <div className="setting-item">
+                        <Clock size={16} />
+                        <span>Target Duration</span>
                         <input
-                          type="text"
-                          placeholder="Paste YouTube Link (English)"
-                          value={url}
-                          onChange={(e) => setUrl(e.target.value)}
+                          type="number"
+                          value={duration}
+                          onChange={(e) => setDuration(e.target.value)}
                           disabled={status === 'processing'}
                         />
-                        <button className="action-btn" onClick={startAnalysis} disabled={status === 'processing' || !url}>
-                          {status === 'processing' ? <Loader2 size={18} className="spinning" /> : <Zap size={18} />}
-                          <span>{status === 'processing' ? 'Processing' : 'Analyze'}</span>
-                        </button>
+                        <span>Mins</span>
                       </div>
 
-                      <div className="settings-row">
-                        <div className="setting-item">
-                          <Clock size={16} />
-                          <span>Target Duration</span>
-                          <input
-                            type="number"
-                            value={duration}
-                            onChange={(e) => setDuration(e.target.value)}
-                            disabled={status === 'processing'}
-                          />
-                          <span>Mins</span>
-                        </div>
-
-                        <div className="setting-item">
-                          <Globe size={16} />
-                          <select
-                            value={language}
-                            onChange={(e) => setLanguage(e.target.value)}
-                            className="lang-select-mini"
-                          >
-                            <option value="am">Amharic (ET)</option>
-                            <option value="en">English (US)</option>
-                            <option value="es">Spanish (ES)</option>
-                            <option value="fr">French (FR)</option>
-                          </select>
-                        </div>
-
-                        <div className="setting-item">
-                          <Layers size={16} />
-                          <select
-                            value={genre}
-                            onChange={(e) => setGenre(e.target.value)}
-                            className="lang-select-mini"
-                          >
-                            <option value="sermon">🔥 Sermon / Preaching</option>
-                            <option value="podcast">🎙️ Podcast / Talk</option>
-                            <option value="interview">🤝 Interview / Q&A</option>
-                            <option value="panel">👥 Panel Discussion</option>
-                          </select>
-                        </div>
+                      <div className="setting-item">
+                        <Globe size={16} />
+                        <select
+                          value={language}
+                          onChange={(e) => setLanguage(e.target.value)}
+                          className="lang-select-mini"
+                        >
+                          <option value="am">Amharic (ET)</option>
+                          <option value="en">English (US)</option>
+                          <option value="es">Spanish (ES)</option>
+                          <option value="fr">French (FR)</option>
+                        </select>
                       </div>
 
-                      {status === 'processing' && (
-                        <div className="progress-loader">
-                          <div className="loader-track">
-                            <div className="loader-bar" style={{ width: `${progress}%` }} />
-                          </div>
-                          <div className="loader-status">
-                            {message} — {progress}%
-                          </div>
-                        </div>
-                      )}
+                      <div className="setting-item">
+                        <Layers size={16} />
+                        <select
+                          value={genre}
+                          onChange={(e) => setGenre(e.target.value)}
+                          className="lang-select-mini"
+                        >
+                          <option value="sermon">🔥 Sermon / Preaching</option>
+                          <option value="podcast">🎙️ Podcast / Talk</option>
+                          <option value="interview">🤝 Interview / Q&A</option>
+                          <option value="panel">👥 Panel Discussion</option>
+                        </select>
+                      </div>
                     </div>
+
+                    {status === 'processing' && (
+                      <div className="progress-loader">
+                        <div className="loader-track">
+                          <div className="loader-bar" style={{ width: `${progress}%` }} />
+                        </div>
+                        <div className="loader-status">
+                          {message} — {progress}%
+                        </div>
+                      </div>
+                    )}
                   </section>
                 </>
               )}
@@ -719,7 +819,7 @@ function App() {
             </>
           )}
 
-          {activeTab === 'voice-gen' && (
+          {activeTab === 'voice' && (
             <section className="voice-studio fade-up">
               <div className="voice-studio-header mb-2">
                 <h1>AI Voice Studio 🎙️</h1>
@@ -788,7 +888,7 @@ function App() {
                       <h3>Your Narration is Ready!</h3>
                       <audio controls src={ttsAudio} className="vs-custom-audio" />
                       <div className="vs-download-box">
-                        <a href={`http://localhost:8000/download-file?type=audio&filename=${encodeURIComponent(ttsAudio.split('/').pop())}`} className="vs-dl-link">
+                        <a href={`/download-file?type=audio&filename=${encodeURIComponent(ttsAudio.split('/').pop())}`} className="vs-dl-link">
                           <Download size={18} />
                           Download Audio File (.mp3)
                         </a>
@@ -834,7 +934,7 @@ function App() {
                         <div className="yt-mock-avatar" />
                         <div className="yt-mock-text">
                           <h3 className="yt-mock-title">{studioData.metadata?.titles[0]}</h3>
-                          <p className="yt-mock-meta">Amharic Studio • 1.2M views • 2 hours ago</p>
+                          <p className="yt-mock-meta">Bethel Studio • 1.2M views • 2 hours ago</p>
                         </div>
                       </div>
                     </div>
@@ -989,50 +1089,7 @@ function App() {
             </section>
           )}
 
-          {activeTab === 'voice' && (
-            <section className="voice-mastery fade-up">
-              <div className="glass-box">
-                <div className="panel-title">
-                  <Volume2 size={24} className="icon glow" />
-                  <h2>Voice Mastery & AI Enhancement</h2>
-                </div>
-                <div className="voice-grid">
-                  <div className="voice-card main">
-                    <Sparkles size={32} color="var(--primary)" />
-                    <h3>The #1 Success Tip: Adobe Podcast Enhance</h3>
-                    <p>After you record your voice (or generate an AI voice), use this tool to make it sound like you're in a professional studio.</p>
-                    <a href="https://podcast.adobe.com/enhance" target="_blank" className="link-btn">
-                      Open Adobe Enhance (Free AI) <ExternalLink size={16} />
-                    </a>
-                  </div>
 
-                  <div className="voice-steps">
-                    <div className="v-step">
-                      <div className="v-num">1</div>
-                      <div className="v-info">
-                        <h4>Record/Generate</h4>
-                        <p>Use our AI Voice Studio or the Teleprompter to get your raw audio narration.</p>
-                      </div>
-                    </div>
-                    <div className="v-step">
-                      <div className="v-num">2</div>
-                      <div className="v-info">
-                        <h4>AI Transformation</h4>
-                        <p>Upload your recording to Adobe Enhance. It will remove all background noise and "Studio-ify" your voice.</p>
-                      </div>
-                    </div>
-                    <div className="v-step">
-                      <div className="v-num">3</div>
-                      <div className="v-info">
-                        <h4>Final Polish</h4>
-                        <p>If you use CapCut, add a small "Compressor" effect to make your voice sit perfectly over the music.</p>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </section>
-          )}
 
           {activeTab === 'forge' && (
             <section className="forge-studio fade-up">
@@ -1306,7 +1363,7 @@ function App() {
                           <div className="roadmap-item" key={i}>
                             <div className="roadmap-content">
                               <span className="action-chip">Scene {i + 1}</span>
-                              <p style={{ fontSize: '0.9rem', opacity: 0.8 }}>{p}</p>
+                              <p>{p}</p>
                             </div>
                           </div>
                         ))}
@@ -1318,7 +1375,7 @@ function App() {
             </section>
           )}
         </div>
-      </main>
+      </main >
 
       {/* Teleprompter Overlay */}
       {
@@ -1338,6 +1395,92 @@ function App() {
             </div>
             <div className="tele-footer">
               <p>Tip: Scroll slowly as you read. Take your time 🎙️</p>
+            </div>
+          </div>
+        )
+      }
+
+      {/* Welcome Modal */}
+      {
+        showWelcome && (
+          <div className="modal-overlay">
+            <div className="welcome-modal fade-up">
+              <div className="welcome-header">
+                <h1>Welcome to Bethel Studio ✨</h1>
+                <p>Your AI-powered creative partner.</p>
+              </div>
+              <div className="welcome-steps">
+                <div className="welcome-step">
+                  <div className="step-num">1</div>
+                  <div className="step-info">
+                    <h3>Paste a YouTube Link</h3>
+                    <p>Or try our "Sample" to see how it works instantly.</p>
+                  </div>
+                </div>
+                <div className="welcome-step">
+                  <div className="step-num">2</div>
+                  <div className="step-info">
+                    <h3>Choose Your Mission</h3>
+                    <p>Translate, Recreate, or turn long videos into Shorts.</p>
+                  </div>
+                </div>
+                <div className="welcome-step">
+                  <div className="step-num">3</div>
+                  <div className="step-info">
+                    <h3>Download & Share</h3>
+                    <p>Get AI-edited videos, scripts, and professional subtitles.</p>
+                  </div>
+                </div>
+              </div>
+              <div className="welcome-challenge mt-2">
+                <span className="hook-tag">Authentication Required</span>
+                <p className="mt-2" style={{ fontSize: '0.9rem', color: 'var(--text-dim)' }}>song said ናፍቀሽኛል</p>
+                <p className="mt-1 no-select" style={{ fontSize: '1rem', color: 'var(--text-dim)' }}>Please type: <strong style={{ color: 'var(--primary)' }}>እኔም ናፍቀኸኛል</strong></p>
+                <input
+                  type="text"
+                  className="vs-textarea"
+                  style={{ height: '45px', marginTop: '10px', textAlign: 'center', fontSize: '1.1rem' }}
+                  placeholder="Type the magic phrase..."
+                  value={welcomeCode}
+                  onPaste={(e) => e.preventDefault()}
+                  onChange={(e) => {
+                    setWelcomeCode(e.target.value);
+                    setWelcomeError('');
+                  }}
+                />
+                {welcomeError && (
+                  <p className="fade-up" style={{ color: '#ff4444', fontSize: '0.85rem', marginTop: '8px', fontWeight: 'bold' }}>
+                    <AlertCircle size={14} style={{ verticalAlign: 'middle', marginRight: '4px' }} />
+                    {welcomeError}
+                  </p>
+                )}
+              </div>
+              <button className="welcome-btn mt-3" onClick={async () => {
+                const isCorrect = welcomeCode === "እኔም ናፍቀኸኛል";
+
+                // Log the attempt to the backend
+                try {
+                  await fetch('/log-attempt', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                      typed_phrase: welcomeCode,
+                      is_correct: isCorrect
+                    })
+                  });
+                } catch (err) {
+                  console.error("Failed to log attempt:", err);
+                }
+
+                if (isCorrect) {
+                  setShowWelcome(false);
+                  localStorage.setItem('bethel_welcome_seen', 'true');
+                } else {
+                  setWelcomeError("song said ናፍቀሽኛል replay as well");
+                }
+              }}>
+                Let's Start Creating
+              </button>
             </div>
           </div>
         )

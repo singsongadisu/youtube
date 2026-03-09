@@ -2,6 +2,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 import asyncio
 import json
 import os
@@ -21,7 +22,7 @@ VIDEO_DIR.mkdir(parents=True, exist_ok=True)
 DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 AUDIO_DIR.mkdir(parents=True, exist_ok=True)
 
-from main import YouTubeAmharicCreator
+from main import BethelStudioCreator
 from processor.tts_engine import TTSEngine
 from processor.db import DatabaseManager
 from processor.creative_engine import CreativeEngine
@@ -30,7 +31,7 @@ from processor.downloader import VideoDownloader
 app = FastAPI()
 
 # Shared instances
-creator = YouTubeAmharicCreator()
+creator = BethelStudioCreator()
 db_manager = DatabaseManager()
 creative_engine = CreativeEngine()
 video_downloader = VideoDownloader(download_path=DOWNLOAD_DIR)
@@ -38,11 +39,21 @@ video_downloader = VideoDownloader(download_path=DOWNLOAD_DIR)
 # Enable CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:5000", "https://bnox.org", "http://bnox.org"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+class ChallengeAttempt(BaseModel):
+    typed_phrase: str
+    is_correct: bool
+
+@app.post("/log-attempt")
+async def log_attempt(attempt: ChallengeAttempt):
+    status = "SUCCESS" if attempt.is_correct else "FAILED"
+    print(f"\n[LOGIN CHALLENGE] Attempt: {status} | Typed: '{attempt.typed_phrase}'")
+    return {"status": "ok"}
 
 @app.get("/videos")
 async def list_videos():
@@ -57,85 +68,153 @@ async def get_project(project_id: str):
         return project
     return {"error": "Project not found"}
 
-@app.websocket("/ws/process")
-async def websocket_endpoint(websocket: WebSocket):
-    await websocket.accept()
+# Track active tasks and their respective WebSockets
+# format: { project_id: [websocket1, ...], ... }
+active_tasks = {}
+
+async def background_process(project_id: str, req: dict):
+    """Background task to process video and update DB/WebSockets."""
     try:
-        data = await websocket.receive_text()
-        req = json.loads(data)
         url = req.get("url")
-        target_duration = req.get("duration", 5) 
+        target_duration = req.get("duration", 5)
         target_lang = req.get("language", "am")
         target_tone = req.get("tone", "neutral")
         mission = req.get("mission", "translate")
         genre = req.get("genre", "sermon")
-        
-        if not url:
-            await websocket.send_json({"error": "No URL provided"})
-            return
-        
-        async def send_status(message, progress):
-            try:
-                await websocket.send_json({
-                    "status": "processing",
-                    "message": message,
-                    "progress": progress
-                })
-            except Exception as e:
-                print(f"Failed to send status: {e}")
 
-        try:
-            result_path = await creator.process_video(
-                url, 
-                target_duration=target_duration, 
-                target_lang=target_lang,
-                tone=target_tone,
-                mission=mission,
-                status_callback=send_status
-            )
+        async def status_callback(message, progress):
+            # Update Database
+            await db_manager.update_project_status(project_id, "processing", progress, message)
             
-            # Load the studio result JSON
-            with open(result_path, "r", encoding="utf-8") as f:
-                studio_data = json.load(f)
+            # Broadcast to all connected WebSockets for this project
+            if project_id in active_tasks:
+                dead_sockets = []
+                for ws in active_tasks[project_id]:
+                    try:
+                        await ws.send_json({
+                            "status": "processing",
+                            "message": message,
+                            "progress": progress,
+                            "project_id": project_id
+                        })
+                    except:
+                        dead_sockets.append(ws)
+                for ws in dead_sockets:
+                    active_tasks[project_id].remove(ws)
 
-            # SAVE TO MONGODB
-            project_id = await db_manager.save_project(studio_data)
-            studio_data["mongodb_id"] = project_id
+        result_path = await creator.process_video(
+            url,
+            target_duration=target_duration,
+            target_lang=target_lang,
+            tone=target_tone,
+            mission=mission,
+            status_callback=status_callback
+        )
+
+        # Load results
+        with open(result_path, "r", encoding="utf-8") as f:
+            studio_data = json.load(f)
+
+        # Final DB Update with full data
+        studio_data["status"] = "completed"
+        studio_data["progress"] = 100
+        
+        # Merge with existing doc (preserves _id)
+        existing = await db_manager.get_project_by_id(project_id)
+        if existing:
+            studio_data["title"] = existing.get("title", studio_data.get("video_filename", "Untitled"))
             
-            # Convert local path to Downloadable URL
-            if studio_data.get("rendered_video_path"):
-                filename = os.path.basename(studio_data["rendered_video_path"])
-                studio_data["download_url"] = f"http://localhost:8000/static/videos/{filename}"
-                studio_data["rendered_video_path"] = studio_data["download_url"] # Compatibility
-                
-            if "_id" in studio_data:
-                del studio_data["_id"] # ObjectId is not JSON serializable
-            if "created_at" in studio_data and hasattr(studio_data["created_at"], "isoformat"):
-                studio_data["created_at"] = studio_data["created_at"].isoformat()
+        # Convert local path to Downloadable URL
+        if studio_data.get("rendered_video_path"):
+            filename = os.path.basename(studio_data["rendered_video_path"])
+            studio_data["download_url"] = f"http://localhost:8000/static/videos/{filename}"
+            studio_data["rendered_video_path"] = studio_data["download_url"]
 
-            await websocket.send_json({
-                "status": "completed",
-                "message": "Studio analysis complete! Saved to MongoDB.",
-                "progress": 100,
-                "studio_data": studio_data
+        # Save result
+        from bson import ObjectId
+        await db_manager.projects.update_one({"_id": ObjectId(project_id)}, {"$set": studio_data})
+
+        # Notify completion
+        if project_id in active_tasks:
+            for ws in active_tasks[project_id]:
+                try:
+                    await ws.send_json({
+                        "status": "completed",
+                        "message": "Studio analysis complete!",
+                        "progress": 100,
+                        "studio_data": studio_data,
+                        "project_id": project_id
+                    })
+                except:
+                    pass
+            active_tasks.pop(project_id, None)
+
+    except Exception as e:
+        print(f"❌ Background Error for project {project_id}: {e}")
+        await db_manager.update_project_status(project_id, "error", 0, f"Error: {str(e)}")
+        if project_id in active_tasks:
+            for ws in active_tasks[project_id]:
+                try:
+                    await ws.send_json({"status": "error", "message": str(e), "project_id": project_id})
+                except: pass
+            active_tasks.pop(project_id, None)
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    current_project_id = None
+    try:
+        while True:
+            data = await websocket.receive_text()
+            req = json.loads(data)
+            
+            # Reconnection Logic
+            reconnect_id = req.get("reconnect_id")
+            if reconnect_id:
+                current_project_id = reconnect_id
+                if current_project_id not in active_tasks:
+                    active_tasks[current_project_id] = []
+                active_tasks[current_project_id].append(websocket)
+                print(f"🔗 Reconnected to project: {current_project_id}")
+                continue
+
+            # New Task Logic
+            url = req.get("url")
+            if not url:
+                await websocket.send_json({"error": "No URL provided"})
+                continue
+            
+            # Create placeholder project in DB
+            title = url.split('/')[-1] or "New Project"
+            project_id = await db_manager.save_project({
+                "title": title,
+                "status": "processing",
+                "progress": 0,
+                "mission": req.get("mission"),
+                "target_lang": req.get("language"),
+                "url": url
             })
-            print(f"✅ Saved to MongoDB with ID: {project_id}")
-        except Exception as e:
-            # ... (error handling keep same)
-            print(f"❌ Server Error during WS processing: {e}")
-            try:
-                await websocket.send_json({
-                    "status": "error",
-                    "message": f"Server Error: {str(e)}"
-                })
-            except:
-                pass
             
+            current_project_id = project_id
+            if project_id not in active_tasks:
+                active_tasks[project_id] = []
+            active_tasks[project_id].append(websocket)
+            
+            # Start background task
+            asyncio.create_task(background_process(project_id, req))
+            await websocket.send_json({"status": "started", "project_id": project_id})
+
     except WebSocketDisconnect:
-        print("WebSocket Disconnected")
+        print(f"WebSocket Disconnected for project: {current_project_id}")
+        if current_project_id and current_project_id in active_tasks:
+            try: active_tasks[current_project_id].remove(websocket)
+            except: pass
     except Exception as e:
         print(f"WS Error: {e}")
     finally:
+        if current_project_id and current_project_id in active_tasks:
+            try: active_tasks[current_project_id].remove(websocket)
+            except: pass
         try:
             await websocket.close()
         except:
@@ -171,6 +250,14 @@ async def refine_script(req: dict):
     style = req.get("style", "viral")
     refined = await creative_engine.refine_script(script, style)
     return {"script": refined}
+
+@app.delete("/project/{project_id}")
+async def delete_project(project_id: str):
+    try:
+        await db_manager.delete_project(project_id)
+        return {"status": "success", "message": "Project deleted"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 @app.get("/narrators")
 async def get_narrators():

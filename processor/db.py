@@ -20,7 +20,7 @@ class DatabaseManager:
 
     async def get_all_projects(self) -> List[Dict[str, Any]]:
         """Retrieves all project summaries from MongoDB (newest first)."""
-        cursor = self.projects.find({}, {"title": 1, "created_at": 1, "_id": 1}).sort("created_at", -1)
+        cursor = self.projects.find({}, {"title": 1, "created_at": 1, "_id": 1, "status": 1, "mission": 1, "progress": 1, "target_lang": 1}).sort("created_at", -1)
         projects = []
         async for doc in cursor:
             doc["_id"] = str(doc["_id"])
@@ -28,6 +28,14 @@ class DatabaseManager:
                 doc["created_at"] = doc["created_at"].isoformat()
             projects.append(doc)
         return projects
+
+    async def update_project_status(self, project_id: str, status: str, progress: int, message: str = None):
+        """Updates the status and progress of a project."""
+        from bson import ObjectId
+        update_data = {"status": status, "progress": progress}
+        if message:
+            update_data["message"] = message
+        await self.projects.update_one({"_id": ObjectId(project_id)}, {"$set": update_data})
 
     async def get_project_by_id(self, project_id: str) -> Dict[str, Any]:
         """Retrieves a full project result by its MongoDB ID."""
@@ -38,3 +46,8 @@ class DatabaseManager:
             if "created_at" in doc:
                 doc["created_at"] = doc["created_at"].isoformat()
         return doc
+
+    async def delete_project(self, project_id: str):
+        """Deletes a project record from MongoDB."""
+        from bson import ObjectId
+        await self.projects.delete_one({"_id": ObjectId(project_id)})
