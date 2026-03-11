@@ -1,4 +1,4 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -22,11 +22,16 @@ VIDEO_DIR.mkdir(parents=True, exist_ok=True)
 DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 AUDIO_DIR.mkdir(parents=True, exist_ok=True)
 
+# Temporary uploads for transcription
+UPLOAD_DIR = (ROOT_DIR / "assets" / "uploads").resolve()
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
 from main import YouTubeStudioCreator
 from processor.tts_engine import TTSEngine
 from processor.db import DatabaseManager
 from processor.creative_engine import CreativeEngine
 from processor.downloader import VideoDownloader
+from processor.transcribe_engine import TranscriptionEngine
 
 app = FastAPI()
 
@@ -35,6 +40,7 @@ creator = YouTubeStudioCreator()
 db_manager = DatabaseManager()
 creative_engine = CreativeEngine()
 video_downloader = VideoDownloader(download_path=DOWNLOAD_DIR)
+transcription_engine = TranscriptionEngine(model_name="base")
 
 # Enable CORS
 app.add_middleware(
@@ -213,13 +219,31 @@ async def websocket_endpoint(websocket: WebSocket):
 @app.post("/generate-tts")
 async def generate_tts(req: dict):
     text = req.get("text")
-    lang = req.get("lang", "am")
-    gender = req.get("gender", "female")
+    lang = req.get("lang", "en")
+    narrator_id = req.get("narratorId")
+    persona = req.get("persona")
     tone = req.get("tone", "neutral")
-    filename = req.get("filename", "narration.mp3")
+    import time
+    filename = req.get("filename", f"tts_{int(time.time())}.mp3")
+
+    # Map narratorId to persona if not provided
+    narrator_personas = {
+        "guy": "anchor", 
+        "aria": "studio_pro", 
+        "chris": "expert", 
+        "eric": "reporter", 
+        "jenny": "specialist", 
+        "sonia": "global_voice"
+    }
+    if not persona and narrator_id in narrator_personas:
+        persona = narrator_personas[narrator_id]
+
+    gender = req.get("gender", "female")
+    narrators_map = {"guy": "male", "aria": "female", "ameha": "male", "mekdes": "female", "chris": "expert", "eric": "reporter", "jenny": "specialist", "sonia": "global"}
+    if narrator_id in narrators_map: gender = narrators_map[narrator_id]
     
     tts = TTSEngine(output_dir=ROOT_DIR / "assets/audio")
-    path = await tts.generate_speech(text, lang, gender, tone, filename)
+    path = await tts.generate_speech(text, lang=lang, gender=gender, tone=tone, persona=persona, filename=filename)
     
     if path:
         return {"url": f"http://localhost:8000/static/audio/{filename}"}
@@ -252,16 +276,14 @@ async def delete_project(project_id: str):
 @app.get("/narrators")
 async def get_narrators():
     return [
-        {"id": "guy", "name": "Guy", "lang": "en", "gender": "male", "role": "Professional Narrator", "avatar": "/narrators/guy_pro.png"},
-        {"id": "aria", "name": "Aria", "lang": "en", "gender": "female", "role": "Calm Storyteller", "avatar": "/narrators/aria_pro.png"},
+        {"id": "guy", "name": "Guy (Anchor)", "lang": "en", "gender": "male", "role": "News Anchor", "avatar": "/narrators/guy_pro.png", "persona": "anchor"},
+        {"id": "aria", "name": "Aria (Narrator)", "lang": "en", "gender": "female", "role": "Storyteller", "avatar": "/narrators/aria_pro.png", "persona": "studio_pro"},
+        {"id": "chris", "name": "Christopher (Expert)", "lang": "en", "gender": "expert", "role": "Technical Expert", "avatar": "/narrators/chris_pro.png", "persona": "expert"},
+        {"id": "eric", "name": "Eric (Reporter)", "lang": "en", "gender": "reporter", "role": "Field Reporter", "avatar": "/narrators/eric_pro.png", "persona": "reporter"},
+        {"id": "jenny", "name": "Jenny (Specialist)", "lang": "en", "gender": "specialist", "role": "AI Tutor", "avatar": "/narrators/jenny_pro.png", "persona": "specialist"},
+        {"id": "sonia", "name": "Sonia (Global)", "lang": "en", "gender": "global", "role": "International Voice", "avatar": "/narrators/sonia_pro.png", "persona": "global_voice"},
         {"id": "ameha", "name": "Ameha", "lang": "am", "gender": "male", "role": "Wise Elder", "avatar": "/narrators/ameha_pro.png"},
-        {"id": "mekdes", "name": "Mekdes", "lang": "am", "gender": "female", "role": "Warm Teacher", "avatar": "/narrators/mekdes_pro.png"},
-        {"id": "hamed", "name": "Hamed", "lang": "ar", "gender": "male", "role": "Cultural Guide", "avatar": "/narrators/hamed_pro.png"},
-        {"id": "zariyah", "name": "Zariyah", "lang": "ar", "gender": "female", "role": "Faithful Voice", "avatar": "/narrators/zariyah_pro.png"},
-        {"id": "alvaro", "name": "Alvaro", "lang": "es", "gender": "male", "role": "Engaging Host", "avatar": "/narrators/alvaro_pro.png"},
-        {"id": "elvira", "name": "Elvira", "lang": "es", "gender": "female", "role": "Lyrical Soul", "avatar": "/narrators/elvira_pro.png"},
-        {"id": "henri", "name": "Henri", "lang": "fr", "gender": "male", "role": "Distinguished Voice", "avatar": "/narrators/henri_pro.png"},
-        {"id": "denise", "name": "Denise", "lang": "fr", "gender": "female", "role": "Articulate Artist", "avatar": "/narrators/denise_pro.png"}
+        {"id": "mekdes", "name": "Mekdes", "lang": "am", "gender": "female", "role": "Warm Teacher", "avatar": "/narrators/mekdes_pro.png"}
     ]
 
 @app.post("/approve-creative-project")
@@ -270,15 +292,32 @@ async def approve_creative_project(req: dict):
     script = req.get("script")
     lang = req.get("lang", "en")
     narrator_id = req.get("narratorId")
-    segments = req.get("segments", [])
-    idea = req.get("idea", "Creative Project")
+    persona = req.get("persona") # New: allow direct persona passing
     
+    # Fallback/Mapping if persona not direct
+    narrator_personas = {
+        "guy": "anchor", 
+        "aria": "studio_pro", 
+        "chris": "expert", 
+        "eric": "reporter", 
+        "jenny": "specialist", 
+        "sonia": "global_voice"
+    }
+    if not persona and narrator_id in narrator_personas:
+        persona = narrator_personas[narrator_id]
+
     gender = "female"
-    narrators = {"guy": "male", "aria": "female", "ameha": "male", "mekdes": "female", "hamed": "male", "zariyah": "female", "alvaro": "male", "elvira": "female", "henri": "male", "denise": "female"}
+    narrators = {"guy": "male", "aria": "female", "ameha": "male", "mekdes": "female", "chris": "expert", "eric": "reporter", "jenny": "specialist", "sonia": "global"}
     if narrator_id in narrators: gender = narrators[narrator_id]
 
     tts_engine = TTSEngine(output_dir=ROOT_DIR / "assets/audio")
-    audio_path = await tts_engine.generate_speech(script, lang=lang, gender=gender, tone="storytelling", filename="creative_narration.mp3")
+    audio_path = await tts_engine.generate_speech(
+        script, 
+        lang=lang, 
+        gender=gender, 
+        persona=persona, 
+        filename="creative_narration.mp3"
+    )
     
     storyboard = []
     for i, seg in enumerate(segments[:6]):
@@ -348,6 +387,39 @@ async def download_social(req: dict):
         }
     except Exception as e:
         return {"error": str(e)}
+
+@app.post("/transcribe")
+async def transcribe_file(file: UploadFile = File(...)):
+    """
+    Receives an audio/video file, transcribes it, and returns text + SRT.
+    """
+    try:
+        # Save uploaded file
+        import time
+        file_ext = os.path.splitext(file.filename)[1]
+        temp_filename = f"transcribe_{int(time.time())}{file_ext}"
+        file_path = UPLOAD_DIR / temp_filename
+        
+        with open(file_path, "wb") as buffer:
+            content = await file.read()
+            buffer.write(content)
+            
+        # Transcribe in a separate thread to avoid blocking the event loop
+        result = await asyncio.to_thread(transcription_engine.transcribe_sync, str(file_path))
+        
+        # Cleanup
+        try: os.remove(file_path)
+        except: pass
+            
+        return {
+            "status": "success",
+            "text": result["text"],
+            "srt": result["srt"],
+            "language": result["language"]
+        }
+    except Exception as e:
+        print(f"Transcription Error: {e}")
+        return {"status": "error", "message": str(e)}
 
 # Serve static files for generated videos, downloads, and audio
 

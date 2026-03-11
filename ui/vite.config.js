@@ -23,6 +23,7 @@ export default defineConfig({
       '/generate-forge-video': 'http://localhost:8000',
       '/video-info': 'http://localhost:8000',
       '/download-social': 'http://localhost:8000',
+      '/transcribe': 'http://localhost:8000',
       '/static': 'http://localhost:8000',
 
       '/download-file': 'http://localhost:8000'

@@ -5,7 +5,7 @@ import {
   Layout, BookOpen, Layers, Zap,
   ChevronRight, ExternalLink, Download,
   Loader2, AlertCircle, CheckCircle, Split, Map, Sparkles, Image as ImageIcon, FileText, Globe, Maximize, X, Volume2, Info,
-  Music, Play, Pause, Save, TrendingUp, User, Target, Camera, Video, Film, Trash2
+  Music, Play, Pause, Save, TrendingUp, User, Target, Camera, Video, Film, Trash2, CloudUpload, Copy, Check
 } from 'lucide-react';
 import './App.css';
 
@@ -59,6 +59,15 @@ function App() {
   const [forgeVideoUrl, setForgeVideoUrl] = useState(null);
   const [narrators, setNarrators] = useState([]);
   const [selectedNarrator, setSelectedNarrator] = useState(null);
+  
+  // Transcription State
+  const [transcriptionScript, setTranscriptionScript] = useState('');
+  const [transcriptionSrt, setTranscriptionSrt] = useState('');
+  const [isTranscribing, setIsTranscribing] = useState(false);
+  const [transcriptionLang, setTranscriptionLang] = useState('');
+  const [uploadFile, setUploadFile] = useState(null);
+  const [copiedText, setCopiedText] = useState(false);
+  const [copiedSrt, setCopiedSrt] = useState(false);
 
   const ws = useRef(null);
 
@@ -66,6 +75,14 @@ function App() {
     fetchProjects();
     fetchNarrators();
   }, []);
+
+  useEffect(() => {
+    // Sync narrator when language changes in Voice Studio
+    if (narrators.length > 0) {
+      const firstForLang = narrators.find(n => n.lang === vsLang);
+      if (firstForLang) setSelectedNarrator(firstForLang);
+    }
+  }, [vsLang]);
 
   const fetchNarrators = async () => {
     try {
@@ -240,9 +257,10 @@ function App() {
         body: JSON.stringify({
           text: text,
           lang: lang,
-          gender: gender,
+          narratorId: selectedNarrator?.id,
+          persona: selectedNarrator?.persona,
           tone: tone,
-          filename: `tts_${lang}_${gender}_${tone}_${Date.now()}.mp3`
+          filename: `tts_${lang}_${selectedNarrator?.id || 'voice'}_${Date.now()}.mp3`
         })
       });
       const data = await resp.json();
@@ -253,6 +271,65 @@ function App() {
       console.error("TTS failed:", err);
     } finally {
       setIsGeneratingTTS(false);
+    }
+  };
+
+  const handleTranscribe = async () => {
+    if (!uploadFile || isTranscribing) return;
+    setIsTranscribing(true);
+    setTranscriptionScript('');
+    setTranscriptionSrt('');
+    
+    const formData = new FormData();
+    formData.append('file', uploadFile);
+    
+    try {
+      const resp = await fetch('/transcribe', {
+        method: 'POST',
+        body: formData
+      });
+      
+      if (!resp.ok) {
+        const errText = await resp.text();
+        alert(`Server Error (${resp.status}): ${errText}`);
+        return;
+      }
+
+      const data = await resp.json();
+      if (data.status === 'success') {
+        setTranscriptionScript(data.text);
+        setTranscriptionSrt(data.srt);
+        setTranscriptionLang(data.language);
+      } else {
+        alert("Transcription AI Error: " + (data.message || "Unknown error"));
+      }
+    } catch (err) {
+      console.error("Transcription failed:", err);
+      alert("Network Error: Could not connect to transcription engine. " + err.message);
+    } finally {
+      setIsTranscribing(false);
+    }
+  };
+
+  const downloadTranscriptionSrt = () => {
+    const blob = new Blob([transcriptionSrt], { type: 'text/plain' });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `subtitles_${transcriptionLang || 'auto'}.srt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  };
+
+  const copyToClipboard = (text, type) => {
+    navigator.clipboard.writeText(text);
+    if (type === 'text') {
+      setCopiedText(true);
+      setTimeout(() => setCopiedText(false), 2000);
+    } else {
+      setCopiedSrt(true);
+      setTimeout(() => setCopiedSrt(false), 2000);
     }
   };
 
@@ -452,6 +529,13 @@ function App() {
           </button>
 
 
+          <button
+            className={`nav-item ${activeTab === 'transcription' ? 'active' : ''}`}
+            onClick={() => setActiveTab('transcription')}
+          >
+            <Split size={20} />
+            <span>Transcription</span>
+          </button>
         </nav>
 
         <div className="history-section">
@@ -833,13 +917,21 @@ function App() {
                       <button className={vsLang === 'am' ? 'active' : ''} onClick={() => setVsLang('am')}>Amharic</button>
                       <button className={vsLang === 'en' ? 'active' : ''} onClick={() => setVsLang('en')}>English</button>
                     </div>
-                    <div className="vs-gender-select ml-1">
-                      <button className={gender === 'female' ? 'active' : ''} onClick={() => setGender('female')}>
-                        {vsLang === 'am' ? 'Mekdes (Female)' : 'Aria (Female)'}
-                      </button>
-                      <button className={gender === 'male' ? 'active' : ''} onClick={() => setGender('male')}>
-                        {vsLang === 'am' ? 'Ameha (Male)' : 'Guy (Male)'}
-                      </button>
+                    <div className="vs-narrator-section mt-1">
+                      <div className="narrator-grid mini">
+                        {narrators.filter(n => n.lang === vsLang).map((narrator) => (
+                          <div
+                            key={narrator.id}
+                            className={`narrator-card mini ${selectedNarrator?.id === narrator.id ? 'active' : ''}`}
+                            onClick={() => setSelectedNarrator(narrator)}
+                          >
+                            <div className="narrator-info">
+                              <span className="narrator-name">{narrator.name}</span>
+                              <span className="narrator-role">{narrator.role}</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
                     </div>
                     <div className="vs-tone-selector ml-1">
                       <select
@@ -848,9 +940,11 @@ function App() {
                         className="pro-select"
                       >
                         <option value="neutral">Neutral Vibe</option>
-                        <option value="viral">Viral / Hype</option>
-                        <option value="preaching">Preaching / Deep</option>
+                        <option value="studio_pro">💎 Studio Pro</option>
+                        <option value="cyber_news">📡 Cyber News</option>
+                        <option value="viral">🔥 Viral / Hype</option>
                         <option value="news">Breaking News</option>
+                        <option value="storytelling">📖 Storytelling</option>
                       </select>
                     </div>
                   </div>
@@ -904,6 +998,92 @@ function App() {
                     <p>For the best results, use the **Voice Mastery** tools to enhance the generated AI audio for that premium "Studio" sound.</p>
                   </div>
                 </div>
+              </div>
+            </section>
+          )}
+
+          {activeTab === 'transcription' && (
+            <section className="transcription-studio fade-up">
+              <div className="voice-studio-header mb-2 text-center">
+                <h1>AI Transcription Studio 🎙️</h1>
+                <p>Convert any audio or video into text and timed subtitles instantly.</p>
+              </div>
+
+              <div className="transcription-container glass-box p-3">
+                <div className="upload-zone mb-3">
+                  <div className="upload-content">
+                    <CloudUpload size={48} color="var(--primary)" />
+                    <h3>{uploadFile ? uploadFile.name : 'Click or Drag Audio/Video File'}</h3>
+                    <p>Supports MP3, WAV, MP4, MOV (Max 50MB suggested)</p>
+                    <input 
+                      type="file" 
+                      className="file-input-hidden" 
+                      onChange={(e) => setUploadFile(e.target.files[0])}
+                      accept="audio/*,video/*"
+                    />
+                  </div>
+                </div>
+
+                <div className="vs-actions">
+                  <button 
+                    className="vs-gen-btn highlight" 
+                    onClick={handleTranscribe} 
+                    disabled={!uploadFile || isTranscribing}
+                  >
+                    {isTranscribing ? <Loader2 size={18} className="spinning" /> : <Zap size={18} />}
+                    <span>{isTranscribing ? 'Transcribing (This takes focused AI power)...' : 'Start AI Transcription'}</span>
+                  </button>
+                </div>
+
+                {(transcriptionScript || transcriptionSrt) && (
+                  <div className="transcription-results mt-3 fade-up">
+                    <div className="results-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem' }}>
+                      <div className="transcription-card premium-shadow">
+                        <div className="card-header">
+                          <div className="header-left">
+                            <FileText size={16} />
+                            <span>Raw Transcription (Text)</span>
+                          </div>
+                          <div className="header-actions">
+                            {transcriptionLang && <span className="lang-badge accent">{transcriptionLang.toUpperCase()}</span>}
+                            <button className="icon-action-btn" onClick={() => copyToClipboard(transcriptionScript, 'text')}>
+                              {copiedText ? <Check size={14} color="var(--success)" /> : <Copy size={14} />}
+                            </button>
+                          </div>
+                        </div>
+                        <textarea 
+                          className="script-area premium-scroll" 
+                          readOnly 
+                          value={transcriptionScript} 
+                          style={{ height: '300px' }}
+                        />
+                      </div>
+                      <div className="transcription-card premium-shadow">
+                        <div className="card-header">
+                          <div className="header-left">
+                            <Layers size={16} />
+                            <span>Subtitle Format (SRT)</span>
+                          </div>
+                          <div className="header-actions">
+                            <button className="icon-action-btn" onClick={() => copyToClipboard(transcriptionSrt, 'srt')}>
+                              {copiedSrt ? <Check size={14} color="var(--success)" /> : <Copy size={14} />}
+                            </button>
+                          </div>
+                        </div>
+                        <textarea 
+                          className="script-area srt-view premium-scroll" 
+                          readOnly 
+                          value={transcriptionSrt} 
+                          style={{ height: '300px' }}
+                        />
+                        <button className="vs-gen-btn highlight mini mt-1" onClick={downloadTranscriptionSrt}>
+                          <Download size={14} /> 
+                          <span>Download Subtitles (.srt)</span>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             </section>
           )}

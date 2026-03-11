@@ -52,13 +52,23 @@ class CreativeEngine:
                 ]
             },
             "ai": {
-                "hook": "We are weaving a new intelligence into the fabric of our reality, and the implications are breathtaking.",
-                "core": "Artificial Intelligence is not just a tool; it's a mirror reflecting our own desire to create and understand. As we move into this new era, the challenge is ensuring that our technology remains a servant to our humanity.",
+                "hook": "We are weaving a new intelligence into the fabric of our reality. From ChatGPT to autonomous agents, the AI revolution is no longer coming—it is here.",
+                "core": "Artificial Intelligence is the ultimate multiplier. It can solve humanity's greatest challenges, but it also creates a new digital frontier that requires constant vigilance and understanding.",
                 "depth": [
-                    "The speed of innovation is challenging our traditional views of labor, creativity, and even identity.",
-                    "We must navigate the ethical landscape of AI with a commitment to transparency and equity.",
+                    "Large Language Models are changing how we think about creativity and knowledge work.",
                     "The convergence of silicon and soul is the next great frontier of the human journey.",
+                    "Ethics and safety are not just options; they are the foundations of a sustainable AI future.",
                     "Success in the age of AI will be defined by our ability to maintain our human connection amidst the data."
+                ]
+            },
+            "cyber": {
+                "hook": "In a world where everything is connected, nothing is truly safe. Every line of code is a potential battlefield, and the stakes have never been higher.",
+                "core": "Cybersecurity isn't just about firewalls and passwords; it's about the constant cat-and-mouse game between innovation and exploitation. From ransomware to zero-day vulnerabilities, the digital landscape is evolving every second.",
+                "depth": [
+                    "The human element remain the weakest link in any security chain.",
+                    "Social engineering is often more effective than the most complex malware.",
+                    "Zero Trust architecture is shifting from a luxury to a necessity for modern enterprises.",
+                    "As AI enters the hands of attackers, our automated defenses must become even smarter to stay ahead."
                 ]
             }
         }
